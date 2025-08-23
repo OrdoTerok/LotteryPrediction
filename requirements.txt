@@ -1,0 +1,8 @@
+pandas
+numpy
+scikit-learn
+tensorflow
+requests
+beautifulsoup4
+parquet
+seaborn
