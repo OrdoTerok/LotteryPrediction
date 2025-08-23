@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import requests
 import io
 from typing import Tuple
@@ -103,6 +104,36 @@ def split_dataframe_by_percentage(
     df2 = df.drop(df1.index)
 
     return df1, df2
+
+def prepare_data_for_lstm(df: pd.DataFrame, look_back: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Prepares time series data for an LSTM model.
+
+    This function creates sequences of data (the 'look_back' window) as features
+    (X) and the next data point as the target (y). This is the standard format
+    for training a time series model.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing the time series data. It
+                           is expected to have a 'Winning Numbers' column.
+        look_back (int): The number of previous data points to use as input
+                         features for predicting the next point.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: A tuple containing the prepared features (X)
+                                       and targets (y).
+    """
+    df = df.sort_values(by='Draw Date')
+    winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
+    
+    X, y = [], []
+    for i in range(len(winning_numbers) - look_back):
+        # Create a sequence of 'look_back' winning number sets.
+        X.append(np.concatenate(winning_numbers[i:(i + look_back)]))
+        # The target is the very next winning number set.
+        y.append(winning_numbers[i + look_back])
+        
+    return np.array(X), np.array(y)
 
 if __name__ == "__main__":
     # Call the main function to perform the download and load.

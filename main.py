@@ -5,6 +5,7 @@
 # You can adjust the import statement based on your file name.
 # For this example, we'll assume the file is named 'powerball_loader'.
 import data_handler
+import lstm_model
 from typing import Tuple
 
 def main():
@@ -26,16 +27,26 @@ def main():
 
         # Split the DataFrame into training and testing sets.
         train_df, test_df = data_handler.split_dataframe_by_percentage(powerball_df, 0.8)
+        print(f"\nData split complete: {len(train_df)} training samples, {len(test_df)} testing samples.")
 
-        # You can now add your data analysis or modeling code here.
-        # For example, let's print the columns to see what's available.
-        print("\nAvailable columns:")
-        print(powerball_df.columns.tolist())
+        # The 'look_back' value determines how many previous draws the model
+        # will use to predict the next one.
+        look_back_window = 10
+        X_train, y_train = data_handler.prepare_data_for_lstm(train_df, look_back=look_back_window)
+        X_test, y_test = data_handler.prepare_data_for_lstm(test_df, look_back=look_back_window)
+    
+        print(f"Prepared training data shape: {X_train.shape}")
+        print(f"Prepared testing data shape: {X_test.shape}")
+        if X_train.size == 0 or X_test.size == 0:
+            print("\nNot enough data to create sequences. Exiting.")
+            return
         
-        # You can access a specific column like this:
-        # winning_numbers = powerball_df['Winning Numbers']
-        # print("\nFirst 5 winning numbers:")
-        # print(winning_numbers.head())
+        model = lstm_model.build_and_train_lstm(X_train, y_train)
+
+        # Evaluate the model on the test set.
+        print("\nEvaluating the model on the test data...")
+        test_loss = model.evaluate(X_test.reshape(X_test.shape[0], -1, 5), y_test, verbose=0)
+        print(f"Test Loss (Mean Squared Error): {test_loss:.2f}")
     else:
         print("\nFailed to download or load the data. Please check the internet connection or the source URL.")
 
