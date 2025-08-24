@@ -108,8 +108,8 @@ class DataHandler:
             file_path (str): The path where the Parquet file will be saved.
         """
         try:
-            df.to_csv("base_dataset.csv", index=False)
-            print(f"DataFrame successfully saved to base_dataset.csv")
+            df.to_csv("data_sets/base_dataset.csv", index=False)
+            print(f"DataFrame successfully saved to data_sets/base_dataset.csv")
         except Exception as e:
             print(f"Error saving DataFrame to CSV: {e}")
 

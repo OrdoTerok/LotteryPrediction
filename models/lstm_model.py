@@ -5,7 +5,7 @@ import keras_tuner as kt
 
 class LSTMModel:
     @staticmethod
-    def build_lstm_model(hp, input_shape):
+    def build_lstm_model(hp, input_shape, use_custom_loss=False, force_low_units=False, force_simple=False):
         """
         Builds and compiles an LSTM model for KerasTuner hypertuning, with two outputs:
         - first_five: (5, 69) softmax for the first 5 numbers
@@ -20,10 +20,30 @@ class LSTMModel:
         num_first_classes = 69
         num_sixth_classes = 26
         inputs = tf.keras.Input(shape=input_shape)
-        x = tf.keras.layers.LSTM(
-            units=hp.Int('units', min_value=16, max_value=128, step=16),
-            activation='relu'
-        )(inputs)
+        if force_simple:
+            units = 64
+            x = tf.keras.layers.SimpleRNN(units=units, activation='relu')(inputs)
+        else:
+            # Add KerasTuner hyperparameters for stacking, dropout, and bidirectional
+            units = 128 if force_low_units else hp.Int('units', min_value=64, max_value=256, step=32)
+            use_bidirectional = hp.Boolean('bidirectional', default=True)
+            dropout_rate = hp.Float('dropout', min_value=0.0, max_value=0.5, step=0.1, default=0.2)
+            # First LSTM layer (return_sequences=True for stacking)
+            lstm1 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=True)
+            if use_bidirectional:
+                x = tf.keras.layers.Bidirectional(lstm1)(inputs)
+            else:
+                x = lstm1(inputs)
+            # Dropout after first LSTM
+            x = tf.keras.layers.Dropout(dropout_rate)(x)
+            # Second LSTM layer (return_sequences=False)
+            lstm2 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=False)
+            if use_bidirectional:
+                x = tf.keras.layers.Bidirectional(lstm2)(x)
+            else:
+                x = lstm2(x)
+            # Dropout after second LSTM
+            x = tf.keras.layers.Dropout(dropout_rate)(x)
         # First 5 numbers output
         first_five_dense = tf.keras.layers.Dense(num_first * num_first_classes)(x)
         first_five_reshaped = tf.keras.layers.Reshape((num_first, num_first_classes))(first_five_dense)
@@ -33,10 +53,25 @@ class LSTMModel:
         sixth_reshaped = tf.keras.layers.Reshape((1, num_sixth_classes))(sixth_dense)
         sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
         model = tf.keras.Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
+        # Define batch_size and optimizer for KerasTuner
+        try:
+            batch_size = hp.Choice('batch_size', [16, 32, 64])
+        except Exception:
+            batch_size = 32
+        try:
+            optimizer_choice = hp.Choice('optimizer', ['adam', 'rmsprop', 'nadam'])
+            learning_rate = hp.Choice('learning_rate', [1e-3, 5e-4, 1e-4, 5e-5])
+        except Exception:
+            optimizer_choice = 'adam'
+            learning_rate = 1e-3
+        if optimizer_choice == 'adam':
+            optimizer = tf.keras.optimizers.Adam(learning_rate)
+        elif optimizer_choice == 'rmsprop':
+            optimizer = tf.keras.optimizers.RMSprop(learning_rate)
+        else:
+            optimizer = tf.keras.optimizers.Nadam(learning_rate)
         model.compile(
-            optimizer=tf.keras.optimizers.Adam(
-                hp.Choice('learning_rate', [1e-2, 1e-3, 1e-4])
-            ),
+            optimizer=optimizer,
             loss={
                 'first_five': 'categorical_crossentropy',
                 'sixth': 'categorical_crossentropy'
@@ -46,6 +81,7 @@ class LSTMModel:
                 'sixth': 'accuracy'
             }
         )
+        model._tuner_batch_size = batch_size  # For use in main.py
         return model
 
     @staticmethod

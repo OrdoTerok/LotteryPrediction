@@ -1,0 +1,41 @@
+# config.py
+# Central configuration for all tunable variables in the LotteryPrediction project
+
+# --- Data paths ---
+KAGGLE_CSV_FILE = 'data_sets/powerball_usa.csv'
+BASE_DATASET_FILE = 'data_sets/base_dataset.csv'
+
+# --- Data split ---
+TRAIN_SPLIT = 0.8
+LOOK_BACK_WINDOW = 10  # You can now tune this manually; try 5, 20, 30, etc.
+
+# --- Model training ---
+EPOCHS_TUNER = 40
+EPOCHS_FINAL = 80
+BATCH_SIZE = 32
+VALIDATION_SPLIT = 0.2
+
+# --- KerasTuner ---
+TUNER_MAX_TRIALS = 40
+TUNER_EXECUTIONS_PER_TRIAL = 1
+TUNER_DIRECTORY = 'hypertune_dir'
+TUNER_PROJECT_NAME = 'lstm_lottery'
+
+# --- Label smoothing and uniform mixing ---
+LABEL_SMOOTHING = 0.3
+UNIFORM_MIX_PROB = 0.2
+
+# --- Early stopping ---
+EARLY_STOPPING_PATIENCE = 3
+
+# --- Model complexity ---
+FORCE_LOW_UNITS = True
+FORCE_SIMPLE = True
+
+# --- Temperature grid search ---
+TEMP_MIN = 0.5
+TEMP_MAX = 2.0
+TEMP_STEP = 0.1
+
+# --- Random seed (optional) ---
+RANDOM_SEED = 42
