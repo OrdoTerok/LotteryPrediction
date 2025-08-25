@@ -1,0 +1,92 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# VS Code settings
+.vscode/
+
+# PyCharm settings
+.idea/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+
+# Data and model artifacts
+data_sets/
+hypertune_dir/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*
+
+# Misc
+*.bak
+*.swp
+*.tmp
+
+# Ignore model weights and large files
+*.h5
+*.hdf5
+*.ckpt
+*.pb
+*.pth
+*.pt
+
+# Ignore output files
+output/
+__pycache__/main.cpython-313.pyc
+util/__pycache__/model_utils.cpython-313.pyc
