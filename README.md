@@ -12,7 +12,8 @@ This project predicts lottery numbers using deep learning (LSTM/RNN) with advanc
 4. **Cross-Validation**: Robust evaluation with k-fold CV (set `CV_FOLDS` in config).
 5. **Ensembling**: Selectable via config (`ENSEMBLE_STRATEGY`):
    - Average, Weighted, or Stacking (meta-learner)
-6. **Evaluation**: Reports accuracy, calibration, entropy, KL, Brier score, and saves predictions/plots.
+6. **Iterative Stacking (Meta-Features)**: If `ITERATIVE_STACKING` is enabled in `config.py`, predictions from the previous run are loaded and appended as meta-features for the next run, enabling iterative meta-learning.
+7. **Evaluation**: Reports accuracy, calibration, entropy, KL, Brier score, and saves predictions/plots.
 
 ## How to Run
 ```sh
@@ -28,15 +29,16 @@ python main.py
 - `util/log_utils.py`: Logging utilities.
 
 ## Customization
-- Edit `config.py` to change search spaces, workflow settings, or select optimization/ensembling methods:
-  - `META_OPT_METHOD = 'pso'` or `'bayesian'`
-  - `CV_FOLDS = 1` (no CV) or `>1` (k-fold)
-  - `ENSEMBLE_STRATEGY = 'average'`, `'weighted'`, or `'stacking'`
+- Edit `config.py` to change search spaces, workflow settings, or select optimization/ensembling/iterative stacking methods:
+   - `META_OPT_METHOD = 'pso'` or `'bayesian'`
+   - `CV_FOLDS = 1` (no CV) or `>1` (k-fold)
+   - `ENSEMBLE_STRATEGY = 'average'`, `'weighted'`, or `'stacking'`
+   - `ITERATIVE_STACKING = True` to enable meta-feature augmentation using previous predictions
 - Add/remove meta-parameters in `main.py`, `particle_swarm.py`, or `bayesian_opt.py`.
 - Expand model search space in `util/model_utils.py`.
 
 ## Outputs
-- `results_predictions.json`: Saved predictions and metrics.
+- `results_predictions.json`: Saved predictions and metrics (used for iterative stacking if enabled).
 - `calibration_curve_first_ball.png`: Calibration plot.
 
 ## Requirements

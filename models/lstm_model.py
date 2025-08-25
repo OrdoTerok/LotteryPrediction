@@ -70,17 +70,54 @@ class LSTMModel:
             optimizer = tf.keras.optimizers.RMSprop(learning_rate)
         else:
             optimizer = tf.keras.optimizers.Nadam(learning_rate)
-        model.compile(
-            optimizer=optimizer,
-            loss={
-                'first_five': 'categorical_crossentropy',
-                'sixth': 'categorical_crossentropy'
-            },
-            metrics={
-                'first_five': 'accuracy',
-                'sixth': 'accuracy'
-            }
-        )
+
+        # Custom loss with over-prediction penalty
+        import config
+        penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
+        def overcount_penalty(y_true, y_pred):
+            # y_true, y_pred: (batch, 5, 69) or (batch, 1, 26)
+            # Sum over batch and balls to get predicted/true count for each number
+            true_counts = tf.reduce_sum(y_true, axis=[0, 1])  # (n_classes,)
+            pred_counts = tf.reduce_sum(y_pred, axis=[0, 1])  # (n_classes,)
+            excess = tf.nn.relu(pred_counts - true_counts)
+            return tf.reduce_sum(tf.square(excess))
+
+        def first_five_loss(y_true, y_pred):
+            ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+            ce = tf.reduce_mean(ce)
+            penalty = overcount_penalty(y_true, y_pred)
+            return ce + penalty_weight * penalty
+
+        def sixth_loss(y_true, y_pred):
+            ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+            ce = tf.reduce_mean(ce)
+            penalty = overcount_penalty(y_true, y_pred)
+            return ce + penalty_weight * penalty
+
+        if penalty_weight > 0:
+            model.compile(
+                optimizer=optimizer,
+                loss={
+                    'first_five': first_five_loss,
+                    'sixth': sixth_loss
+                },
+                metrics={
+                    'first_five': 'accuracy',
+                    'sixth': 'accuracy'
+                }
+            )
+        else:
+            model.compile(
+                optimizer=optimizer,
+                loss={
+                    'first_five': 'categorical_crossentropy',
+                    'sixth': 'categorical_crossentropy'
+                },
+                metrics={
+                    'first_five': 'accuracy',
+                    'sixth': 'accuracy'
+                }
+            )
         model._tuner_batch_size = batch_size  # For use in main.py
         return model
 

@@ -160,23 +160,57 @@ class DataHandler:
         The first 5 numbers are one-hot encoded with 69 classes (1-69),
         and the 6th number (Powerball) is one-hot encoded with 26 classes (1-26).
 
+        If config.ITERATIVE_STACKING is True and previous predictions exist, appends them as meta-features.
+
         Returns:
             Tuple[np.ndarray, Tuple[np.ndarray, np.ndarray]]: (X, (y_first_five, y_sixth))
-                - X: features
+                - X: features (optionally with meta-features)
                 - y_first_five: (num_samples, 5, 69) one-hot
                 - y_sixth: (num_samples, 1, 26) one-hot
         """
+        import config
+        import json
         df = df.sort_values(by='Draw Date')
         winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
 
         X = []
         y_first_five = []
         y_sixth = []
+        meta_features = []
         num_first = 5
         num_first_classes = 69
         num_sixth_classes = 26
+        use_meta = getattr(config, 'ITERATIVE_STACKING', False)
+        meta_preds = None
+        if use_meta and os.path.exists('results_predictions.json'):
+            try:
+                with open('results_predictions.json', 'r') as f:
+                    meta_preds = json.load(f)
+                meta_first = np.array(meta_preds.get('first_five_pred_numbers'))
+                meta_sixth = np.array(meta_preds.get('sixth_pred_number'))
+            except Exception as e:
+                print(f"[IterativeStacking] Could not load previous predictions: {e}")
+                meta_preds = None
+        # Determine meta-feature length for padding
+        meta_feat_len = 0
+        if meta_preds is not None:
+            meta_first_shape = meta_first.shape[1:] if meta_first is not None else (5,)
+            meta_sixth_shape = meta_sixth.shape[1:] if meta_sixth is not None else (1,)
+            meta_feat_len = np.prod(meta_first_shape) + np.prod(meta_sixth_shape)
         for i in range(len(winning_numbers) - look_back):
-            X.append(np.concatenate(winning_numbers[i:(i + look_back)]))
+            base_feat = np.concatenate(winning_numbers[i:(i + look_back)])
+            # Optionally append meta-features from previous predictions
+            if meta_preds is not None and i < len(meta_first):
+                meta_feat = np.concatenate([
+                    meta_first[i].flatten(),
+                    meta_sixth[i].flatten()
+                ])
+                X.append(np.concatenate([base_feat, meta_feat]))
+            elif meta_feat_len > 0:
+                # Pad with zeros if meta-features are expected but missing
+                X.append(np.concatenate([base_feat, np.zeros(meta_feat_len, dtype=np.float32)]))
+            else:
+                X.append(base_feat)
             target_numbers = winning_numbers[i + look_back]
             # First 5 numbers one-hot (shape: 5, 69)
             first_five_onehot = np.zeros((num_first, num_first_classes), dtype=np.float32)

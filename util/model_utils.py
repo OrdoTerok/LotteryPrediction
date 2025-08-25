@@ -357,6 +357,9 @@ def run_full_workflow(final_df, config):
     sixth_pred_temp = apply_temperature_softmax(sixth_pred, best_temp)
     first_five_pred_numbers = np.argmax(first_five_pred_temp, axis=-1) + 1
     sixth_pred_number = np.argmax(sixth_pred_temp, axis=-1) + 1
+    # Save softmax probabilities for pseudo-labeling filtering
+    first_five_pred_softmax = first_five_pred_temp.tolist()
+    sixth_pred_softmax = sixth_pred_temp.tolist()
     # True values
     y_first_five_true_numbers = np.argmax(y_test[0], axis=-1) + 1
     y_sixth_true_number = np.argmax(y_test[1], axis=-1) + 1
@@ -391,6 +394,21 @@ def run_full_workflow(final_df, config):
     pred_dist_6 = pred_hist_6 / np.sum(pred_hist_6)
     kl_6 = kl_divergence(true_dist_6, pred_dist_6)
     print(f"Powerball (6th Ball) True Std: {true_std_6:.2f}, Predicted Std: {pred_std_6:.2f}, KL Divergence: {kl_6:.6f}")
-    # Plots
-    plot_ball_distributions(y_first_five_true_numbers, first_five_pred_numbers, num_balls=5, n_classes=69, title_prefix='Ball')
-    plot_powerball_distribution(y_sixth_true_number, sixth_pred_number, n_classes=26)
+    # (Plots are now only shown after all rounds in main.py)
+
+    # Save predictions and softmax for iterative stacking and pseudo-labeling
+    import json
+    results = {
+        'first_five_pred_numbers': first_five_pred_numbers.astype(int).tolist(),
+        'sixth_pred_number': sixth_pred_number.astype(int).tolist(),
+        'y_first_five_true_numbers': y_first_five_true_numbers.astype(int).tolist(),
+        'y_sixth_true_number': y_sixth_true_number.astype(int).tolist(),
+        'first_five_pred_softmax': first_five_pred_softmax,
+        'sixth_pred_softmax': sixth_pred_softmax
+    }
+    try:
+        with open('results_predictions.json', 'w') as f:
+            json.dump(results, f)
+        print("[DEBUG] Saved predictions and softmax to results_predictions.json for iterative stacking and pseudo-labeling.")
+    except Exception as e:
+        print(f"[DEBUG] Could not save predictions for iterative stacking: {e}")

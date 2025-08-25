@@ -46,17 +46,51 @@ class RNNModel:
             opt = tf.keras.optimizers.RMSprop(learning_rate)
         else:
             opt = tf.keras.optimizers.Nadam(learning_rate)
-        model.compile(
-            optimizer=opt,
-            loss={
-                'first_five': 'categorical_crossentropy',
-                'sixth': 'categorical_crossentropy'
-            },
-            metrics={
-                'first_five': 'accuracy',
-                'sixth': 'accuracy'
-            }
-        )
+        # Over-prediction penalty (same as LSTM)
+        import config
+        penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
+        def overcount_penalty(y_true, y_pred):
+            true_counts = tf.reduce_sum(y_true, axis=[0, 1])
+            pred_counts = tf.reduce_sum(y_pred, axis=[0, 1])
+            excess = tf.nn.relu(pred_counts - true_counts)
+            return tf.reduce_sum(tf.square(excess))
+
+        def first_five_loss(y_true, y_pred):
+            ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+            ce = tf.reduce_mean(ce)
+            penalty = overcount_penalty(y_true, y_pred)
+            return ce + penalty_weight * penalty
+
+        def sixth_loss(y_true, y_pred):
+            ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+            ce = tf.reduce_mean(ce)
+            penalty = overcount_penalty(y_true, y_pred)
+            return ce + penalty_weight * penalty
+
+        if penalty_weight > 0:
+            model.compile(
+                optimizer=opt,
+                loss={
+                    'first_five': first_five_loss,
+                    'sixth': sixth_loss
+                },
+                metrics={
+                    'first_five': 'accuracy',
+                    'sixth': 'accuracy'
+                }
+            )
+        else:
+            model.compile(
+                optimizer=opt,
+                loss={
+                    'first_five': 'categorical_crossentropy',
+                    'sixth': 'categorical_crossentropy'
+                },
+                metrics={
+                    'first_five': 'accuracy',
+                    'sixth': 'accuracy'
+                }
+            )
         # For KerasTuner batch size
         if hp is not None:
             try:

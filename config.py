@@ -1,9 +1,17 @@
+# --- Over-prediction penalty ---
+# Penalty weight for predicted count > true count (squared penalty)
+OVERCOUNT_PENALTY_WEIGHT = 0.2
+# --- Iterative stacking ---
+# If True, use previous predictions as meta-features for next run
+ITERATIVE_STACKING = True
+# Number of rounds for iterative stacking automation (only used if ITERATIVE_STACKING is True)
+ITERATIVE_STACKING_ROUNDS = 3
 # --- Ensembling strategy ---
 # Options: 'average', 'weighted', 'stacking'
 ENSEMBLE_STRATEGY = 'average'
 # --- Cross-validation ---
 # Set CV_FOLDS = 1 for no cross-validation (standard train/test split)
-CV_FOLDS = 1
+CV_FOLDS = 5
 # --- Meta-parameter optimization method ---
 # Options: 'pso', 'bayesian'
 META_OPT_METHOD = 'pso'

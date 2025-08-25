@@ -6,7 +6,7 @@ Selectable via config.META_OPT_METHOD = 'bayesian'.
 Supports robust evaluation with cross-validation (config.CV_FOLDS).
 Integrates with main workflow for meta-parameter search.
 """
-import optuna
+import optuna # type: ignore
 import numpy as np
 from util import model_utils
 import config

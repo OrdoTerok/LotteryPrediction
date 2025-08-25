@@ -6,6 +6,7 @@
 # For this example, we'll assume the file is named 'powerball_loader'.
 
 from data.data_handler import DataHandler
+import pandas as pd
 import numpy as np
 from models.lstm_model import LSTMModel
 from models.rnn_model import RNNModel
@@ -74,14 +75,16 @@ def main():
             "UNIFORM_MIX_PROB",
             "TEMP_MIN",
             "TEMP_MAX",
-            "EARLY_STOPPING_PATIENCE"
+            "EARLY_STOPPING_PATIENCE",
+            "OVERCOUNT_PENALTY_WEIGHT"
         ]
         bounds = [
             (0.0, 0.3),      # LABEL_SMOOTHING
             (0.0, 0.3),      # UNIFORM_MIX_PROB
             (0.5, 1.5),      # TEMP_MIN
             (1.5, 2.5),      # TEMP_MAX
-            (1, 10)          # EARLY_STOPPING_PATIENCE
+            (1, 10),         # EARLY_STOPPING_PATIENCE
+            (0.0, 1.0)       # OVERCOUNT_PENALTY_WEIGHT
         ]
         if getattr(config, 'META_OPT_METHOD', 'pso').lower() == 'bayesian':
             from bayesian_opt import bayesian_optimize
@@ -96,13 +99,113 @@ def main():
         for i, name in enumerate(var_names):
             setattr(config, name, best[i])
 
-        # Now run KerasTuner for model/training hyperparameters only, using the best meta-parameters
-        print("[DEBUG] About to call run_full_workflow...")
-        try:
-            run_full_workflow(final_df, config)
-            print("[DEBUG] run_full_workflow completed without exception.")
-        except Exception as e:
-            print(f"[DEBUG] Exception in run_full_workflow: {e}")
+        # --- Multi-round iterative stacking automation ---
+        num_rounds = getattr(config, 'ITERATIVE_STACKING_ROUNDS', 1) if getattr(config, 'ITERATIVE_STACKING', False) else 1
+        import json
+        from util.plot_utils import plot_multi_round_ball_distributions
+        rounds_first_five = []
+        rounds_sixth = []
+        round_labels = []
+        # Load previous predictions if available
+        prev_pred_first_five = None
+        prev_pred_sixth = None
+        if os.path.exists('results_predictions.json'):
+            try:
+                with open('results_predictions.json', 'r') as f:
+                    prev_results = json.load(f)
+                prev_pred_first_five = np.array(prev_results.get('first_five_pred_numbers'))
+                prev_pred_sixth = np.array(prev_results.get('sixth_pred_number'))
+            except Exception as e:
+                print(f"[DEBUG] Could not load previous predictions for plotting: {e}")
+        # Run all rounds and collect predictions
+        pseudo_train_df = None
+        PSEUDO_CONFIDENCE_THRESHOLD = 0.9
+        PSEUDO_MAX_SAMPLES = 100  # Limit per round
+        for round_idx in range(num_rounds):
+            print(f"\n[ITERATIVE STACKING] === Round {round_idx+1} of {num_rounds} ===")
+            try:
+                # Pseudo-labeling: for rounds > 0, add high-confidence test predictions as pseudo-labeled data
+                if round_idx > 0 and pseudo_train_df is not None:
+                    with open('results_predictions.json', 'r') as f:
+                        results = json.load(f)
+                    pseudo_test_df = pseudo_train_df['test_df']
+                    first_five_pred = np.array(results['first_five_pred_numbers'])
+                    sixth_pred = np.array(results['sixth_pred_number'])
+                    # Softmax probabilities (if available)
+                    first_five_softmax = np.array(results.get('first_five_pred_softmax')) if 'first_five_pred_softmax' in results else None
+                    sixth_softmax = np.array(results.get('sixth_pred_softmax')) if 'sixth_pred_softmax' in results else None
+                    # Ensure all arrays are the same length
+                    n = min(len(pseudo_test_df), len(first_five_pred), len(sixth_pred))
+                    if first_five_softmax is not None:
+                        n = min(n, len(first_five_softmax))
+                    if sixth_softmax is not None:
+                        n = min(n, len(sixth_softmax))
+                    pseudo_labels = []
+                    pseudo_indices = []
+                    for i in range(n):
+                        # Softmax-based confidence filtering
+                        if first_five_softmax is not None and sixth_softmax is not None:
+                            conf_first = np.max(first_five_softmax[i], axis=1)  # shape (5,)
+                            conf_sixth = np.max(sixth_softmax[i], axis=1)      # shape (1,)
+                            if np.all(conf_first > PSEUDO_CONFIDENCE_THRESHOLD) and np.all(conf_sixth > PSEUDO_CONFIDENCE_THRESHOLD):
+                                pseudo_indices.append(i)
+                        else:
+                            # If softmax not available, fallback to all
+                            pseudo_indices.append(i)
+                    # Shuffle for diversity and limit
+                    np.random.shuffle(pseudo_indices)
+                    pseudo_indices = pseudo_indices[:min(PSEUDO_MAX_SAMPLES, n, len(pseudo_indices))]
+                    for i in pseudo_indices:
+                        balls = first_five_pred[i].tolist() + sixth_pred[i].tolist()
+                        pseudo_labels.append(' '.join(str(int(b)) for b in balls))
+                    pseudo_df = pseudo_test_df.iloc[pseudo_indices].copy()
+                    pseudo_df['Winning Numbers'] = pseudo_labels
+                    # Monitor distribution
+                    all_pseudo_numbers = np.concatenate([first_five_pred[pseudo_indices], sixth_pred[pseudo_indices]], axis=1).flatten()
+                    unique, counts = np.unique(all_pseudo_numbers, return_counts=True)
+                    print(f"[Pseudo-Labeling] Distribution of pseudo-labeled numbers: {dict(zip(unique, counts))}")
+                    # Append to original training data
+                    train_df = pd.concat([train_df, pseudo_df], ignore_index=True)
+                    print(f"[Pseudo-Labeling] Added {len(pseudo_df)} pseudo-labeled samples to training data.")
+                # Save test_df for next round's pseudo-labeling
+                pseudo_train_df = {'test_df': test_df.copy()} if 'test_df' in locals() else None
+                run_full_workflow(final_df, config)
+                print(f"[DEBUG] run_full_workflow completed for round {round_idx+1}.")
+                # After each round, load predictions from results_predictions.json
+                with open('results_predictions.json', 'r') as f:
+                    results = json.load(f)
+                rounds_first_five.append(np.array(results['first_five_pred_numbers']))
+                rounds_sixth.append(np.array(results['sixth_pred_number']))
+                round_labels.append(f'Round {round_idx+1}')
+                # Save the last round's true values for plotting
+                y_first_five_true_numbers = np.array(results['y_first_five_true_numbers'])
+                y_sixth_true_number = np.array(results['y_sixth_true_number'])
+            except Exception as e:
+                print(f"[DEBUG] Exception in run_full_workflow (round {round_idx+1}): {e}")
+        print(f"\n[ITERATIVE STACKING] Completed {num_rounds} rounds.")
+        # Plot all rounds' predictions and previous predictions
+        if rounds_first_five:
+            plot_multi_round_ball_distributions(
+                y_true=y_first_five_true_numbers,
+                rounds_pred_list=rounds_first_five,
+                prev_pred=prev_pred_first_five,
+                num_balls=5,
+                n_classes=69,
+                title_prefix='Ball',
+                round_labels=round_labels,
+                prev_label='Previous'
+            )
+        if rounds_sixth:
+            from util.plot_utils import plot_multi_round_powerball_distribution
+            plot_multi_round_powerball_distribution(
+                y_true=y_sixth_true_number,
+                rounds_pred_list=rounds_sixth,
+                prev_pred=prev_pred_sixth,
+                n_classes=26,
+                title='Powerball (6th Ball) Distribution',
+                round_labels=round_labels,
+                prev_label='Previous'
+            )
     else:
         print("\nFailed to download or load the data. Please check the internet connection or the source URL.")
         
