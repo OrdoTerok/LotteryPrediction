@@ -37,50 +37,37 @@ class Particle:
 
     def evaluate(self, fitness_func):
         self.set_vars()
-        metrics = fitness_func()
-        # Fitness: minimize KL, maximize std, maximize accuracy, minimize log loss, maximize entropy
-        # You can adjust weights as needed
-        fitness = (
-            np.mean(metrics['kls'])
-            - 0.5 * np.mean(metrics['stds'])
-            - 0.5 * np.mean(metrics['accs'])
-            + 0.2 * np.mean(metrics['log_losses'])
-            - 0.1 * np.mean(metrics['entropies'])
-        )
+        fitness = fitness_func()  # Now returns a float (best val_loss)
         if fitness < self.best_fitness:
             self.best_fitness = fitness
             self.best_position = self.position.copy()
         return fitness
 
-def fitness_func():
-    # Reload main to re-import config
+def fitness_func(final_df):
+    # Reload config to ensure PSO changes are picked up
     importlib.reload(config)
-    importlib.reload(main)
-    # Run main, capture all metrics
+    from util import model_utils
     try:
-        metrics = main.run_for_pso()
-        return metrics
+        fitness = model_utils.run_keras_tuner_with_current_config(final_df, config)
+        return fitness
     except Exception as e:
         print("[PSO] Fitness error:", e)
-        return {
-            'stds': [0],
-            'kls': [float('inf')],
-            'accs': [0],
-            'entropies': [0],
-            'log_losses': [float('inf')]
-        }
+        return float('inf')
 
-def particle_swarm_optimize(var_names, bounds, n_particles=5, n_iter=10):
+def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=10):
     swarm = [Particle(bounds, var_names) for _ in range(n_particles)]
     global_best = None
     global_best_fitness = float('inf')
     for it in range(n_iter):
         print(f"[PSO] Iteration {it+1}/{n_iter}")
         for p in swarm:
-            fitness = p.evaluate(fitness_func)
+            fitness = p.evaluate(lambda: fitness_func(final_df))
             if fitness < global_best_fitness:
                 global_best_fitness = fitness
                 global_best = p.position.copy()
+        # Ensure global_best is initialized before velocity updates
+        if global_best is None:
+            global_best = swarm[0].position.copy()
         for p in swarm:
             p.update_velocity(global_best)
             p.update_position(bounds)
