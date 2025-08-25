@@ -41,10 +41,9 @@ def main():
         analyze_value_ranges_per_ball(final_df)
 
         # Split the DataFrame into training and testing sets.
+        # --- Fixed test set and true labels for all rounds ---
         train_df, test_df = DataHandler.split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
         print(f"\nData split complete: {len(train_df)} training samples, {len(test_df)} testing samples.")
-        # The 'look_back' value determines how many previous draws the model
-        # will use to predict the next one.
         look_back_window = config.LOOK_BACK_WINDOW
         X_train, y_train = DataHandler.prepare_data_for_lstm(train_df, look_back=look_back_window)
         X_test, y_test = DataHandler.prepare_data_for_lstm(test_df, look_back=look_back_window)
@@ -53,6 +52,9 @@ def main():
         if X_train.size == 0 or X_test.size == 0:
             print("\nNot enough data to create sequences. Exiting.")
             return
+        # Store fixed test set true labels for all rounds/plots
+        y_true_first_five = np.argmax(y_test[0], axis=-1) + 1  # shape (n_samples, 5)
+        y_true_sixth = np.argmax(y_test[1], axis=-1) + 1       # shape (n_samples, 1)
         # Hypertuning with KerasTuner
         import keras_tuner as kt
         print("\nStarting KerasTuner hypertuning...")
@@ -76,7 +78,11 @@ def main():
             "TEMP_MIN",
             "TEMP_MAX",
             "EARLY_STOPPING_PATIENCE",
-            "OVERCOUNT_PENALTY_WEIGHT"
+            "OVERCOUNT_PENALTY_WEIGHT",
+            "ENTROPY_PENALTY_WEIGHT",
+            "LGBM_NUM_LEAVES",
+            "LGBM_LEARNING_RATE",
+            "LGBM_MAX_DEPTH"
         ]
         bounds = [
             (0.0, 0.3),      # LABEL_SMOOTHING
@@ -84,7 +90,11 @@ def main():
             (0.5, 1.5),      # TEMP_MIN
             (1.5, 2.5),      # TEMP_MAX
             (1, 10),         # EARLY_STOPPING_PATIENCE
-            (0.0, 1.0)       # OVERCOUNT_PENALTY_WEIGHT
+            (0.0, 1.0),      # OVERCOUNT_PENALTY_WEIGHT
+            (0.0, 1.0),      # ENTROPY_PENALTY_WEIGHT
+            (7, 127),        # LGBM_NUM_LEAVES
+            (0.01, 0.3),     # LGBM_LEARNING_RATE
+            (3, 12)          # LGBM_MAX_DEPTH
         ]
         if getattr(config, 'META_OPT_METHOD', 'pso').lower() == 'bayesian':
             from bayesian_opt import bayesian_optimize
@@ -121,7 +131,7 @@ def main():
         pseudo_train_df = None
         PSEUDO_CONFIDENCE_THRESHOLD = 0.9
         PSEUDO_MAX_SAMPLES = 100  # Limit per round
-        for round_idx in range(num_rounds):
+    for round_idx in range(num_rounds):
             print(f"\n[ITERATIVE STACKING] === Round {round_idx+1} of {num_rounds} ===")
             try:
                 # Pseudo-labeling: for rounds > 0, add high-confidence test predictions as pseudo-labeled data
@@ -142,16 +152,31 @@ def main():
                         n = min(n, len(sixth_softmax))
                     pseudo_labels = []
                     pseudo_indices = []
+                    entropies_first = []
+                    entropies_sixth = []
                     for i in range(n):
-                        # Softmax-based confidence filtering
+                        # Softmax-based confidence filtering and entropy monitoring
+                        accept = True
                         if first_five_softmax is not None and sixth_softmax is not None:
                             conf_first = np.max(first_five_softmax[i], axis=1)  # shape (5,)
                             conf_sixth = np.max(sixth_softmax[i], axis=1)      # shape (1,)
-                            if np.all(conf_first > PSEUDO_CONFIDENCE_THRESHOLD) and np.all(conf_sixth > PSEUDO_CONFIDENCE_THRESHOLD):
-                                pseudo_indices.append(i)
-                        else:
-                            # If softmax not available, fallback to all
+                            entropy_first = -np.sum(first_five_softmax[i] * np.log(first_five_softmax[i] + 1e-8), axis=1)  # (5,)
+                            entropy_sixth = -np.sum(sixth_softmax[i] * np.log(sixth_softmax[i] + 1e-8), axis=1)  # (1,)
+                            entropies_first.append(entropy_first)
+                            entropies_sixth.append(entropy_sixth)
+                            if not (np.all(conf_first > PSEUDO_CONFIDENCE_THRESHOLD) and np.all(conf_sixth > PSEUDO_CONFIDENCE_THRESHOLD)):
+                                accept = False
+                            # Reject if any entropy is below threshold
+                            if np.any(entropy_first < getattr(config, 'PSEUDO_MIN_ENTROPY', 2.5)) or np.any(entropy_sixth < getattr(config, 'PSEUDO_MIN_ENTROPY', 2.5)):
+                                accept = False
+                        if accept:
                             pseudo_indices.append(i)
+                    # Monitor entropy statistics
+                    if entropies_first:
+                        entropies_first = np.stack(entropies_first)
+                        entropies_sixth = np.stack(entropies_sixth)
+                        print(f"[Pseudo-Labeling] Entropy stats (first five): min {entropies_first.min():.3f}, mean {entropies_first.mean():.3f}, max {entropies_first.max():.3f}")
+                        print(f"[Pseudo-Labeling] Entropy stats (sixth): min {entropies_sixth.min():.3f}, mean {entropies_sixth.mean():.3f}, max {entropies_sixth.max():.3f}")
                     # Shuffle for diversity and limit
                     np.random.shuffle(pseudo_indices)
                     pseudo_indices = pseudo_indices[:min(PSEUDO_MAX_SAMPLES, n, len(pseudo_indices))]
@@ -177,35 +202,67 @@ def main():
                 rounds_first_five.append(np.array(results['first_five_pred_numbers']))
                 rounds_sixth.append(np.array(results['sixth_pred_number']))
                 round_labels.append(f'Round {round_idx+1}')
-                # Save the last round's true values for plotting
-                y_first_five_true_numbers = np.array(results['y_first_five_true_numbers'])
-                y_sixth_true_number = np.array(results['y_sixth_true_number'])
+                # Always use the fixed test set true labels for plotting
+                y_first_five_true_numbers = y_true_first_five
+                y_sixth_true_number = y_true_sixth
             except Exception as e:
                 print(f"[DEBUG] Exception in run_full_workflow (round {round_idx+1}): {e}")
-        print(f"\n[ITERATIVE STACKING] Completed {num_rounds} rounds.")
-        # Plot all rounds' predictions and previous predictions
-        if rounds_first_five:
-            plot_multi_round_ball_distributions(
-                y_true=y_first_five_true_numbers,
-                rounds_pred_list=rounds_first_five,
-                prev_pred=prev_pred_first_five,
-                num_balls=5,
-                n_classes=69,
-                title_prefix='Ball',
-                round_labels=round_labels,
-                prev_label='Previous'
-            )
-        if rounds_sixth:
-            from util.plot_utils import plot_multi_round_powerball_distribution
-            plot_multi_round_powerball_distribution(
-                y_true=y_sixth_true_number,
-                rounds_pred_list=rounds_sixth,
-                prev_pred=prev_pred_sixth,
-                n_classes=26,
-                title='Powerball (6th Ball) Distribution',
-                round_labels=round_labels,
-                prev_label='Previous'
-            )
+    print(f"\n[ITERATIVE STACKING] Completed {num_rounds} rounds.")
+    # Plot all rounds' predictions and previous predictions
+    if rounds_first_five:
+        plot_multi_round_ball_distributions(
+            y_true=y_first_five_true_numbers,
+            rounds_pred_list=rounds_first_five,
+            prev_pred=prev_pred_first_five,
+            num_balls=5,
+            n_classes=69,
+            title_prefix='Ball',
+            round_labels=round_labels,
+            prev_label='Previous'
+        )
+    if rounds_sixth:
+        from util.plot_utils import plot_multi_round_powerball_distribution
+        plot_multi_round_powerball_distribution(
+            y_true=y_sixth_true_number,
+            rounds_pred_list=rounds_sixth,
+            prev_pred=prev_pred_sixth,
+            n_classes=26,
+            title='Powerball (6th Ball) Distribution',
+            round_labels=round_labels,
+            prev_label='Previous'
+        )
+        # --- Final compiled line plots for std and KL divergence ---
+        from util.plot_utils_std import (
+            plot_multi_round_true_std,
+            plot_multi_round_pred_std,
+            plot_multi_round_kl_divergence
+        )
+        # Only show after all rounds
+        plot_multi_round_true_std(
+            y_true=y_first_five_true_numbers,
+            rounds_pred_list=rounds_first_five,
+            prev_pred=prev_pred_first_five,
+            num_balls=5,
+            round_labels=round_labels,
+            prev_label='Previous'
+        )
+        plot_multi_round_pred_std(
+            y_true=y_first_five_true_numbers,
+            rounds_pred_list=rounds_first_five,
+            prev_pred=prev_pred_first_five,
+            num_balls=5,
+            round_labels=round_labels,
+            prev_label='Previous'
+        )
+        plot_multi_round_kl_divergence(
+            y_true=y_first_five_true_numbers,
+            rounds_pred_list=rounds_first_five,
+            prev_pred=prev_pred_first_five,
+            num_balls=5,
+            n_classes=69,
+            round_labels=round_labels,
+            prev_label='Previous'
+        )
     else:
         print("\nFailed to download or load the data. Please check the internet connection or the source URL.")
         

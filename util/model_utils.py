@@ -35,7 +35,20 @@ def run_keras_tuner_with_current_config(final_df, config):
                 optimizer=optimizer, learning_rate=learning_rate,
                 activation=activation
             )
-        tuner = kt.RandomSearch(
+        def build_mlp_hp(hp):
+            hidden_units = hp.Choice('mlp_hidden_units', [64, 128, 256, 512])
+            dropout_rate = hp.Float('mlp_dropout_rate', 0.0, 0.5, step=0.1)
+            learning_rate = hp.Choice('mlp_learning_rate', [1e-3, 5e-4, 1e-4])
+            return MLPModel.build_mlp_model(
+                input_shape,
+                num_first=5,
+                num_first_classes=69,
+                num_sixth_classes=26,
+                hidden_units=hidden_units,
+                dropout_rate=dropout_rate
+            )
+        # LSTM tuner
+        tuner_lstm = kt.RandomSearch(
             build_lstm_hp,
             objective='val_loss',
             max_trials=getattr(config, 'KERAS_TUNER_MAX_TRIALS', config.TUNER_MAX_TRIALS),
@@ -43,18 +56,35 @@ def run_keras_tuner_with_current_config(final_df, config):
             directory=config.TUNER_DIRECTORY,
             project_name='pso_lstm'
         )
-        tuner.search(
+        tuner_lstm.search(
             X_train_reshaped, y_train,
             epochs=config.EPOCHS_TUNER,
             batch_size=config.BATCH_SIZE,
             validation_split=config.VALIDATION_SPLIT,
             verbose=0
         )
-        best_hp = tuner.get_best_hyperparameters(1)[0]
+        best_hp_lstm = tuner_lstm.get_best_hyperparameters(1)[0]
+        # MLP tuner
+        tuner_mlp = kt.RandomSearch(
+            build_mlp_hp,
+            objective='val_loss',
+            max_trials=getattr(config, 'KERAS_TUNER_MAX_TRIALS', config.TUNER_MAX_TRIALS),
+            executions_per_trial=getattr(config, 'KERAS_TUNER_EXECUTIONS_PER_TRIAL', config.TUNER_EXECUTIONS_PER_TRIAL),
+            directory=config.TUNER_DIRECTORY,
+            project_name='pso_mlp'
+        )
+        tuner_mlp.search(
+            X_train_reshaped, y_train,
+            epochs=config.EPOCHS_TUNER,
+            batch_size=config.BATCH_SIZE,
+            validation_split=config.VALIDATION_SPLIT,
+            verbose=0
+        )
+        best_hp_mlp = tuner_mlp.get_best_hyperparameters(1)[0]
         try:
-            best_trial = tuner.get_best_trials(1)[0]
+            best_trial = tuner_lstm.get_best_trials(1)[0]
         except AttributeError:
-            best_trial = tuner.oracle.get_best_trials(1)[0]
+            best_trial = tuner_lstm.oracle.get_best_trials(1)[0]
         best_val_loss = best_trial.metrics.get_best_value('val_loss')
         return best_val_loss
     else:
@@ -113,6 +143,8 @@ def run_keras_tuner_with_current_config(final_df, config):
 import numpy as np
 from models.lstm_model import LSTMModel
 from models.rnn_model import RNNModel
+from models.mlp_model import MLPModel
+from models.lgbm_model import LightGBMModel
 from util.metrics import smooth_labels, mix_uniform, kl_to_uniform, kl_divergence
 from util.plot_utils import plot_ball_distributions, plot_powerball_distribution
 from data.data_handler import DataHandler
@@ -289,6 +321,7 @@ def run_full_workflow(final_df, config):
     except Exception as e:
         print(f"[DEBUG] Exception during LSTM model training: {e}")
         return
+
     print("[DEBUG] Building best RNN model...")
     best_rnn_model = RNNModel.build_rnn_model(
         best_hp_rnn, input_shape
@@ -307,11 +340,72 @@ def run_full_workflow(final_df, config):
     except Exception as e:
         print(f"[DEBUG] Exception during RNN model training: {e}")
         return
+
+    print("[DEBUG] Building best MLP model...")
+    best_mlp_model = MLPModel.build_mlp_model(
+        input_shape,
+        num_first=5,
+        num_first_classes=69,
+        num_sixth_classes=26,
+        hidden_units=128,
+        dropout_rate=0.2
+    )
+    try:
+        print("[DEBUG] Training best MLP model...")
+        best_mlp_model.fit(
+            X_train_reshaped, y_train_smoothed,
+            epochs=config.EPOCHS_FINAL,
+            batch_size=config.BATCH_SIZE,
+            validation_split=config.VALIDATION_SPLIT,
+            verbose=0
+        )
+        print("[DEBUG] Completed MLP model training.")
+    except Exception as e:
+        print(f"[DEBUG] Exception during MLP model training: {e}")
+        return
+
+    print("[DEBUG] Building LightGBM models...")
+    # Flatten input for LightGBM (samples, features)
+    X_train_flat = X_train_reshaped.reshape(X_train_reshaped.shape[0], -1)
+    X_test_flat = X_test_reshaped.reshape(X_test_reshaped.shape[0], -1)
+    lgbm_params = {
+        'objective': 'multiclass',
+        'num_class': 69,  # for first five balls, will be overridden for sixth
+        'metric': 'multi_logloss',
+        'verbosity': -1,
+        'num_leaves': int(getattr(config, 'LGBM_NUM_LEAVES', 31)),
+        'learning_rate': float(getattr(config, 'LGBM_LEARNING_RATE', 0.1)),
+        'max_depth': int(getattr(config, 'LGBM_MAX_DEPTH', 7)),
+    }
+    lgbm_models_first, lgbm_model_sixth = LightGBMModel.build_lgbm_models(
+        num_first=5, num_first_classes=69, num_sixth_classes=26, params=lgbm_params
+    )
+    try:
+        print("[DEBUG] Training LightGBM models...")
+        LightGBMModel.fit(lgbm_models_first, lgbm_model_sixth, X_train_flat, y_train_smoothed)
+        print("[DEBUG] Completed LightGBM model training.")
+    except Exception as e:
+        print(f"[DEBUG] Exception during LightGBM model training: {e}")
+        return
+
     print("[DEBUG] Starting ensembling...")
     try:
         print("[DEBUG] Making ensemble predictions...")
         print(f"[DEBUG] X_test_reshaped shape: {X_test_reshaped.shape}")
-        models = [best_lstm_model, best_rnn_model]
+        # Get predictions from LightGBM
+        lgbm_first_pred, lgbm_sixth_pred = LightGBMModel.predict_proba(lgbm_models_first, lgbm_model_sixth, X_test_flat)
+        # Wrap LightGBM as a model-like object for ensemble_predict
+        class LGBMWrap:
+            def __init__(self, first, sixth):
+                self.first = first
+                self.sixth = sixth
+            def predict(self, X, verbose=0):
+                # X is (samples, time, features), flatten for LGBM
+                X_flat = X.reshape(X.shape[0], -1)
+                first, sixth = LightGBMModel.predict_proba(lgbm_models_first, lgbm_model_sixth, X_flat)
+                return first, sixth
+        lgbm_wrapper = LGBMWrap(lgbm_models_first, lgbm_model_sixth)
+        models = [best_lstm_model, best_rnn_model, best_mlp_model, lgbm_wrapper]
         first_five_pred, sixth_pred = ensemble_predict(models, X_test_reshaped)
         print(f"[DEBUG] first_five_pred shape: {first_five_pred.shape}, sixth_pred shape: {sixth_pred.shape}")
         print("[DEBUG] Completed ensemble predictions.")

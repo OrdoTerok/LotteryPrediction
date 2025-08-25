@@ -71,30 +71,32 @@ class LSTMModel:
         else:
             optimizer = tf.keras.optimizers.Nadam(learning_rate)
 
-        # Custom loss with over-prediction penalty
-        import config
-        penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
-        def overcount_penalty(y_true, y_pred):
-            # y_true, y_pred: (batch, 5, 69) or (batch, 1, 26)
-            # Sum over batch and balls to get predicted/true count for each number
-            true_counts = tf.reduce_sum(y_true, axis=[0, 1])  # (n_classes,)
-            pred_counts = tf.reduce_sum(y_pred, axis=[0, 1])  # (n_classes,)
-            excess = tf.nn.relu(pred_counts - true_counts)
-            return tf.reduce_sum(tf.square(excess))
-
-        def first_five_loss(y_true, y_pred):
-            ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
-            ce = tf.reduce_mean(ce)
-            penalty = overcount_penalty(y_true, y_pred)
-            return ce + penalty_weight * penalty
-
-        def sixth_loss(y_true, y_pred):
-            ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
-            ce = tf.reduce_mean(ce)
-            penalty = overcount_penalty(y_true, y_pred)
-            return ce + penalty_weight * penalty
-
-        if penalty_weight > 0:
+        # Custom loss with over-prediction and entropy penalty
+        if use_custom_loss:
+            import config
+            import tensorflow.keras.backend as K
+            penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
+            entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)
+            def overcount_penalty(y_true, y_pred):
+                true_counts = tf.reduce_sum(y_true, axis=[0, 1])
+                pred_counts = tf.reduce_sum(y_pred, axis=[0, 1])
+                excess = tf.nn.relu(pred_counts - true_counts)
+                return tf.reduce_sum(tf.square(excess))
+            def entropy_reg(y_pred):
+                ent = -K.sum(y_pred * K.log(y_pred + 1e-8), axis=-1)
+                return -K.mean(ent)
+            def first_five_loss(y_true, y_pred):
+                ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+                ce = tf.reduce_mean(ce)
+                penalty = overcount_penalty(y_true, y_pred)
+                entropy_pen = entropy_reg(y_pred)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
+            def sixth_loss(y_true, y_pred):
+                ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+                ce = tf.reduce_mean(ce)
+                penalty = overcount_penalty(y_true, y_pred)
+                entropy_pen = entropy_reg(y_pred)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
             model.compile(
                 optimizer=optimizer,
                 loss={
