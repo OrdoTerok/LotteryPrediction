@@ -68,8 +68,7 @@ def main():
         print("\n--- Most Likely Value Ranges Per Ball (Full Dataset) ---")
         analyze_value_ranges_per_ball(final_df)
 
-        # --- PSO meta-optimization for meta-hyperparameters only ---
-        from particle_swarm import particle_swarm_optimize
+        # --- Meta-parameter optimization for meta-hyperparameters (PSO or Bayesian) ---
         var_names = [
             "LABEL_SMOOTHING",
             "UNIFORM_MIX_PROB",
@@ -84,15 +83,26 @@ def main():
             (1.5, 2.5),      # TEMP_MAX
             (1, 10)          # EARLY_STOPPING_PATIENCE
         ]
-        best = particle_swarm_optimize(var_names, bounds, final_df, n_particles=config.PSO_PARTICLES, n_iter=config.PSO_ITER)
-        print("Best meta-hyperparameters:", dict(zip(var_names, best)))
+        if getattr(config, 'META_OPT_METHOD', 'pso').lower() == 'bayesian':
+            from bayesian_opt import bayesian_optimize
+            best = bayesian_optimize(var_names, bounds, final_df, n_trials=getattr(config, 'PSO_ITER', 10))
+            print("Best meta-hyperparameters (Bayesian):", dict(zip(var_names, best)))
+        else:
+            from particle_swarm import particle_swarm_optimize
+            best = particle_swarm_optimize(var_names, bounds, final_df, n_particles=config.PSO_PARTICLES, n_iter=config.PSO_ITER)
+            print("Best meta-hyperparameters (PSO):", dict(zip(var_names, best)))
 
-        # Set config to best found by PSO before running KerasTuner/model search
+        # Set config to best found by optimizer before running KerasTuner/model search
         for i, name in enumerate(var_names):
             setattr(config, name, best[i])
 
         # Now run KerasTuner for model/training hyperparameters only, using the best meta-parameters
-        run_full_workflow(final_df, config)
+        print("[DEBUG] About to call run_full_workflow...")
+        try:
+            run_full_workflow(final_df, config)
+            print("[DEBUG] run_full_workflow completed without exception.")
+        except Exception as e:
+            print(f"[DEBUG] Exception in run_full_workflow: {e}")
     else:
         print("\nFailed to download or load the data. Please check the internet connection or the source URL.")
         

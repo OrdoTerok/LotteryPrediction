@@ -1,6 +1,9 @@
 # particle_swarm.py
 """
-Particle Swarm Optimizer for hyperparameter tuning in LotteryPrediction.
+Particle Swarm Optimizer for meta-parameter tuning in LotteryPrediction.
+Selectable via config.META_OPT_METHOD = 'pso'.
+Supports robust evaluation with cross-validation (config.CV_FOLDS).
+Integrates with main workflow for meta-parameter search.
 Fitness is based on predicted std and KL divergence of model predictions.
 """
 import numpy as np

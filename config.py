@@ -1,3 +1,12 @@
+# --- Ensembling strategy ---
+# Options: 'average', 'weighted', 'stacking'
+ENSEMBLE_STRATEGY = 'average'
+# --- Cross-validation ---
+# Set CV_FOLDS = 1 for no cross-validation (standard train/test split)
+CV_FOLDS = 1
+# --- Meta-parameter optimization method ---
+# Options: 'pso', 'bayesian'
+META_OPT_METHOD = 'pso'
 # config.py
 # Central configuration for all tunable variables in the LotteryPrediction project
 
