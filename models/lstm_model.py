@@ -24,36 +24,28 @@ class LSTMModel:
             units = 64
             x = tf.keras.layers.SimpleRNN(units=units, activation='relu')(inputs)
         else:
-            # Add KerasTuner hyperparameters for stacking, dropout, and bidirectional
             units = 128 if force_low_units else hp.Int('units', min_value=64, max_value=256, step=32)
             use_bidirectional = hp.Boolean('bidirectional', default=True)
             dropout_rate = hp.Float('dropout', min_value=0.0, max_value=0.5, step=0.1, default=0.2)
-            # First LSTM layer (return_sequences=True for stacking)
             lstm1 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=True)
             if use_bidirectional:
                 x = tf.keras.layers.Bidirectional(lstm1)(inputs)
             else:
                 x = lstm1(inputs)
-            # Dropout after first LSTM
             x = tf.keras.layers.Dropout(dropout_rate)(x)
-            # Second LSTM layer (return_sequences=False)
             lstm2 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=False)
             if use_bidirectional:
                 x = tf.keras.layers.Bidirectional(lstm2)(x)
             else:
                 x = lstm2(x)
-            # Dropout after second LSTM
             x = tf.keras.layers.Dropout(dropout_rate)(x)
-        # First 5 numbers output
         first_five_dense = tf.keras.layers.Dense(num_first * num_first_classes)(x)
         first_five_reshaped = tf.keras.layers.Reshape((num_first, num_first_classes))(first_five_dense)
         first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
-        # Sixth number output
         sixth_dense = tf.keras.layers.Dense(num_sixth_classes)(x)
         sixth_reshaped = tf.keras.layers.Reshape((1, num_sixth_classes))(sixth_dense)
         sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
         model = tf.keras.Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
-        # Define batch_size and optimizer for KerasTuner
         try:
             batch_size = hp.Choice('batch_size', [16, 32, 64])
         except Exception:
@@ -71,32 +63,62 @@ class LSTMModel:
         else:
             optimizer = tf.keras.optimizers.Nadam(learning_rate)
 
-        # Custom loss with over-prediction and entropy penalty
         if use_custom_loss:
             import config
             import tensorflow.keras.backend as K
             penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
             entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)
+            jaccard_weight = getattr(config, 'JACCARD_LOSS_WEIGHT', 0.0)
+            duplicate_penalty_weight = getattr(config, 'DUPLICATE_PENALTY_WEIGHT', 0.0)
+
             def overcount_penalty(y_true, y_pred):
-                true_counts = tf.reduce_sum(y_true, axis=[0, 1])
-                pred_counts = tf.reduce_sum(y_pred, axis=[0, 1])
+                true_counts = tf.reduce_sum(y_true, axis=1)
+                pred_counts = tf.reduce_sum(y_pred, axis=1)
                 excess = tf.nn.relu(pred_counts - true_counts)
-                return tf.reduce_sum(tf.square(excess))
+                penalty = tf.reduce_mean(tf.reduce_sum(tf.square(excess), axis=-1))
+                return penalty
+
             def entropy_reg(y_pred):
                 ent = -K.sum(y_pred * K.log(y_pred + 1e-8), axis=-1)
                 return -K.mean(ent)
+
+            def jaccard_loss(y_true, y_pred):
+                # y_true, y_pred: (batch, balls, classes)
+                y_true_bin = tf.cast(y_true > 0, tf.float32)
+                y_pred_bin = tf.cast(y_pred == tf.reduce_max(y_pred, axis=-1, keepdims=True), tf.float32)
+                intersection = tf.reduce_sum(y_true_bin * y_pred_bin, axis=[1,2])
+                union = tf.reduce_sum(tf.cast((y_true_bin + y_pred_bin) > 0, tf.float32), axis=[1,2])
+                jaccard = 1.0 - intersection / (union + 1e-8)
+                return tf.reduce_mean(jaccard)
+
+            def duplicate_penalty(y_pred):
+                # Penalize if same class is predicted for multiple balls in a ticket
+                # y_pred: (batch, balls, classes)
+                pred_idx = tf.argmax(y_pred, axis=-1)  # (batch, balls)
+                penalty = 0.0
+                for i in range(y_pred.shape[1]):
+                    for j in range(i+1, y_pred.shape[1]):
+                        penalty += tf.reduce_mean(tf.cast(tf.equal(pred_idx[:, i], pred_idx[:, j]), tf.float32))
+                return penalty / (y_pred.shape[1] * (y_pred.shape[1] - 1) / 2)
+
             def first_five_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
                 ce = tf.reduce_mean(ce)
                 penalty = overcount_penalty(y_true, y_pred)
                 entropy_pen = entropy_reg(y_pred)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
+                jac = jaccard_loss(y_true, y_pred)
+                dup_pen = duplicate_penalty(y_pred)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen
+
             def sixth_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
                 ce = tf.reduce_mean(ce)
                 penalty = overcount_penalty(y_true, y_pred)
                 entropy_pen = entropy_reg(y_pred)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
+                jac = jaccard_loss(y_true, y_pred)
+                dup_pen = duplicate_penalty(y_pred)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen
+
             model.compile(
                 optimizer=optimizer,
                 loss={
@@ -120,7 +142,6 @@ class LSTMModel:
                     'sixth': 'accuracy'
                 }
             )
-        model._tuner_batch_size = batch_size  # For use in main.py
         return model
 
     @staticmethod
@@ -134,11 +155,9 @@ class LSTMModel:
         X_train_reshaped = X_train.reshape(X_train.shape[0], -1, num_first + 1)
         inputs = tf.keras.Input(shape=(X_train_reshaped.shape[1], X_train_reshaped.shape[2]))
         x = tf.keras.layers.LSTM(50, activation='relu')(inputs)
-        # First 5 numbers output
         first_five_dense = tf.keras.layers.Dense(num_first * num_first_classes)(x)
         first_five_reshaped = tf.keras.layers.Reshape((num_first, num_first_classes))(first_five_dense)
         first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
-        # Sixth number output
         sixth_dense = tf.keras.layers.Dense(num_sixth_classes)(x)
         sixth_reshaped = tf.keras.layers.Reshape((1, num_sixth_classes))(sixth_dense)
         sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)

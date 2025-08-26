@@ -17,7 +17,6 @@ def plot_multi_round_powerball_distribution(y_true, rounds_pred_list, prev_pred=
     x = np.arange(1, n_classes + 1)
     width = 0.8 / (2 + len(rounds_pred_list))
     offsets = np.linspace(-width * (1 + len(rounds_pred_list)) / 2, width * (1 + len(rounds_pred_list)) / 2, 2 + len(rounds_pred_list))
-    # True values
     true_counts = np.bincount(y_true[:, 0] - 1, minlength=n_classes)
     plt.bar(x + offsets[0], true_counts, width=width, color='blue', label='True', align='center')
     idx_offset = 1
@@ -57,7 +56,6 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
         x = np.arange(1, n_classes + 1)
         width = 0.8 / (2 + len(rounds_pred_list))  # bar width
         offsets = np.linspace(-width * (1 + len(rounds_pred_list)) / 2, width * (1 + len(rounds_pred_list)) / 2, 2 + len(rounds_pred_list))
-        # True values
         true_counts = np.bincount(y_true[:, i] - 1, minlength=n_classes)
         plt.bar(x + offsets[0], true_counts, width=width, color='blue', label='True', align='center')
         idx_offset = 1
@@ -65,7 +63,6 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
             prev_counts = np.bincount(prev_pred[:, i] - 1, minlength=n_classes)
             plt.bar(x + offsets[1], prev_counts, width=width, color='black', label=prev_label, align='center')
             idx_offset += 1
-        # Each round's predictions
         for idx, y_pred in enumerate(rounds_pred_list):
             label = round_labels[idx] if round_labels and idx < len(round_labels) else f'Round {idx+1}'
             color = palette((idx + 2) % 10)

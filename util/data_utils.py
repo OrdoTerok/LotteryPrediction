@@ -15,7 +15,6 @@ def analyze_value_ranges_per_ball(df):
         vc = pd.Series(ball_vals).value_counts().sort_index()
         top = vc.sort_values(ascending=False).head(10)
         print(f"  Top 10 most frequent numbers: {list(top.index)} (counts: {list(top.values)})")
-    # Powerball (6th ball)
     ball_vals = np.array(balls[5])
     print(f"\nPowerball (6th Ball):")
     print(f"  Min: {ball_vals.min()}, Max: {ball_vals.max()}")

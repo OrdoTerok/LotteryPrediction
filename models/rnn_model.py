@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.keras import layers, Model # type: ignore
+from tensorflow.keras import layers, Model
 
 class RNNModel:
     @staticmethod
@@ -28,51 +28,54 @@ class RNNModel:
             if use_bidirectional:
                 x = layers.Bidirectional(rnn_layer)(x)
             else:
-                x = rnn_layer(x)
-            if dropout > 0:
-                x = layers.Dropout(dropout)(x)
-        # Output for first five balls (1-69)
+                if dropout > 0:
+                    x = layers.Dropout(dropout)(x)
         first_five_dense = layers.Dense(5 * 69)(x)
         first_five_softmax = layers.Reshape((5, 69))(first_five_dense)
         first_five_softmax = layers.Softmax(axis=-1, name='first_five')(first_five_softmax)
-        # Output for sixth ball (1-26) -- ensure shape (None, 1, 26)
         sixth_dense = layers.Dense(26)(x)
         sixth_reshape = layers.Reshape((1, 26))(sixth_dense)
         sixth_softmax = layers.Softmax(axis=-1, name='sixth')(sixth_reshape)
         model = Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
-        # Optimizer
         if optimizer_choice == 'adam':
             opt = tf.keras.optimizers.Adam(learning_rate)
         elif optimizer_choice == 'rmsprop':
             opt = tf.keras.optimizers.RMSprop(learning_rate)
         else:
             opt = tf.keras.optimizers.Nadam(learning_rate)
-        # Over-prediction and entropy penalty (same as LSTM)
+
         if use_custom_loss:
             import config
             import tensorflow.keras.backend as K
             penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
             entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)
+
             def overcount_penalty(y_true, y_pred):
-                true_counts = tf.reduce_sum(y_true, axis=[0, 1])
-                pred_counts = tf.reduce_sum(y_pred, axis=[0, 1])
+                # Per-sample, per-class penalty, normalized
+                true_counts = tf.reduce_sum(y_true, axis=1)  # (batch, classes)
+                pred_counts = tf.reduce_sum(y_pred, axis=1)
                 excess = tf.nn.relu(pred_counts - true_counts)
-                return tf.reduce_sum(tf.square(excess))
+                penalty = tf.reduce_mean(tf.reduce_sum(tf.square(excess), axis=-1))  # mean over batch
+                return penalty
+
             def entropy_reg(y_pred):
                 ent = -K.sum(y_pred * K.log(y_pred + 1e-8), axis=-1)
                 return -K.mean(ent)
+
             def first_five_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
                 ce = tf.reduce_mean(ce)
                 penalty = overcount_penalty(y_true, y_pred)
                 entropy_pen = entropy_reg(y_pred)
                 return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
+
             def sixth_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
                 ce = tf.reduce_mean(ce)
                 penalty = overcount_penalty(y_true, y_pred)
                 entropy_pen = entropy_reg(y_pred)
                 return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
+
             model.compile(
                 optimizer=opt,
                 loss={
@@ -96,7 +99,6 @@ class RNNModel:
                     'sixth': 'accuracy'
                 }
             )
-        # For KerasTuner batch size
         if hp is not None:
             try:
                 batch_size = hp.Choice('batch_size', [16, 32, 64])

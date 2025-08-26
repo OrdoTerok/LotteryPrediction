@@ -14,16 +14,13 @@ def plot_multi_round_true_std(y_true, rounds_pred_list, prev_pred=None, num_ball
     """
     stds = []
     labels = []
-    # True std for last round
     true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
     stds.append(true_stds)
     labels.append('True')
-    # Previous predictions
     if prev_pred is not None:
         prev_stds = [np.std(prev_pred[:, i]) for i in range(num_balls)]
         stds.append(prev_stds)
         labels.append(prev_label)
-    # Each round's predictions
     for idx, y_pred in enumerate(rounds_pred_list):
         round_stds = [np.std(y_pred[:, i]) for i in range(num_balls)]
         stds.append(round_stds)
@@ -31,7 +28,7 @@ def plot_multi_round_true_std(y_true, rounds_pred_list, prev_pred=None, num_ball
             labels.append(round_labels[idx])
         else:
             labels.append(f'Round {idx+1}')
-    stds = np.array(stds)  # shape: (num_sources, num_balls)
+    stds = np.array(stds)
     plt.figure(figsize=(10, 6))
     for i in range(stds.shape[1]):
         plt.plot(labels, stds[:, i], marker='o', label=f'Ball {i+1}')
@@ -48,7 +45,6 @@ def plot_multi_round_pred_std(y_true, rounds_pred_list, prev_pred=None, num_ball
     """
     stds = []
     labels = []
-    # True for last round (for reference)
     true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
     stds.append(true_stds)
     labels.append('True')
@@ -87,10 +83,8 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
     """
     kls = []
     labels = []
-    # True distribution (reference, KL=0)
     kls.append([0.0 for _ in range(num_balls)])
     labels.append('True')
-    # Helper: get distribution
     def get_dist(arr, i):
         return np.bincount(arr[:, i]-1, minlength=n_classes) / arr.shape[0]
     true_dists = [get_dist(y_true, i) for i in range(num_balls)]

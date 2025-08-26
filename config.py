@@ -1,3 +1,13 @@
+# --- Assignment method ---
+# Options: 'optimal' (Hungarian), 'greedy' (legacy uniqueness)
+ASSIGNMENT_METHOD = 'optimal'
+# --- Custom loss weights ---
+# Weight for Jaccard loss (set similarity)
+JACCARD_LOSS_WEIGHT = 0.0
+# Weight for duplicate penalty (uniqueness enforcement)
+DUPLICATE_PENALTY_WEIGHT = 0.0
+# If True, use custom loss (with overcount/entropy penalty) for MLP
+MLP_USE_CUSTOM_LOSS = True
 # LightGBM hyperparameters (for meta-optimization)
 LGBM_NUM_LEAVES = 31
 LGBM_LEARNING_RATE = 0.1
@@ -5,11 +15,16 @@ LGBM_MAX_DEPTH = 7
 
 # --- Over-prediction penalty ---
 # Penalty weight for predicted count > true count (squared penalty)
-OVERCOUNT_PENALTY_WEIGHT = 0.2
+OVERCOUNT_PENALTY_WEIGHT = 0.5
 
 # --- Overconfidence/entropy penalty ---
 # Penalty weight for low-entropy (overconfident) predictions in the loss
-ENTROPY_PENALTY_WEIGHT = 0.1
+ENTROPY_PENALTY_WEIGHT = 0.5
+# Label smoothing and uniform prior for regularization
+LABEL_SMOOTHING = 0.05
+UNIFORM_MIX_PROB = 0.05
+# Lower pseudo-label confidence threshold for more diversity
+PSEUDO_CONFIDENCE_THRESHOLD = 0.7
 # Minimum entropy for pseudo-label acceptance (per sample, per ball)
 PSEUDO_MIN_ENTROPY = 2.5
 
@@ -54,8 +69,10 @@ TUNER_DIRECTORY = 'hypertune_dir'
 TUNER_PROJECT_NAME = 'lstm_lottery'
 
 # --- Label smoothing and uniform mixing ---
-LABEL_SMOOTHING = 0.3
-UNIFORM_MIX_PROB = 0.2
+LABEL_SMOOTHING = 0.0
+UNIFORM_MIX_PROB = 0.0
+# --- Debug: Only run LSTM model for diagnostics ---
+ONLY_LSTM_MODEL = False
 
 
 # --- Early stopping ---
