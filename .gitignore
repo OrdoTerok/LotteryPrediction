@@ -1,6 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+**/__pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 
 # C extensions
@@ -38,6 +40,11 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
+
+# Project data, experiment, and tuning artifacts
+data_sets/
+experiments/
+hypertune_dir/
 .hypothesis/
 .pytest_cache/
 

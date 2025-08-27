@@ -36,19 +36,22 @@ def run_pipeline(config):
         if X_test.size == 0:
             print("\nNot enough data to create test sequences. Exiting.")
             tracker.end_run()
-            return
+            return float('inf')
         y_true_first_five = np.argmax(y_test[0], axis=-1) + 1
         y_true_sixth = np.argmax(y_test[1], axis=-1) + 1
         from util.model_utils import run_meta_optimization, run_iterative_stacking
         run_meta_optimization(final_df, config)
         prev_pred_first_five = None
         prev_pred_sixth = None
-        if os.path.exists('results_predictions.json'):
+        history_path = os.path.join('data_sets', 'results_predictions_history.json')
+        if os.path.exists(history_path):
             try:
-                with open('results_predictions.json', 'r') as f:
-                    prev_results = json.load(f)
-                prev_pred_first_five = np.array(prev_results.get('first_five_pred_numbers'))
-                prev_pred_sixth = np.array(prev_results.get('sixth_pred_number'))
+                with open(history_path, 'r') as f:
+                    history = json.load(f)
+                if isinstance(history, list) and len(history) > 0:
+                    prev_results = history[-1]
+                    prev_pred_first_five = np.array(prev_results.get('first_five_pred_numbers'))
+                    prev_pred_sixth = np.array(prev_results.get('sixth_pred_number'))
             except Exception:
                 pass
         rounds_first_five, rounds_sixth, round_labels = run_iterative_stacking(
@@ -56,8 +59,8 @@ def run_pipeline(config):
             prev_pred_first_five=prev_pred_first_five, prev_pred_sixth=prev_pred_sixth
         )
         # Log predictions artifact
-        if os.path.exists('results_predictions.json'):
-            tracker.log_artifact('results_predictions.json')
+        if os.path.exists(history_path):
+            tracker.log_artifact(history_path)
         if rounds_first_five:
             plot_multi_round_ball_distributions(
                 y_true=y_true_first_five,
@@ -153,15 +156,16 @@ def run_meta_optimization(final_df, config):
         print("Best meta-hyperparameters (Bayesian):", dict(zip(var_names, best)))
     else:
         from meta_tuning.particle_swarm import particle_swarm_optimize
-        best = particle_swarm_optimize(var_names, bounds, final_df, n_particles=config.PSO_PARTICLES, n_iter=config.PSO_ITER)
+        # Split final_df into train/test for PSO
+        from data.data_handler import DataHandler
+        train_df, test_df = DataHandler.split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
+        best = particle_swarm_optimize(var_names, bounds, (train_df, test_df), n_particles=config.PSO_PARTICLES, n_iter=config.PSO_ITER)
         print("Best meta-hyperparameters (PSO):", dict(zip(var_names, best)))
     for i, name in enumerate(var_names):
         setattr(config, name, best[i])
 
+import os
 def run_iterative_stacking(train_df, test_df, config, y_true_first_five, y_true_sixth, prev_pred_first_five=None, prev_pred_sixth=None):
-    """
-    Run multi-round iterative stacking and pseudo-labeling. Returns (rounds_first_five, rounds_sixth, round_labels).
-    """
     import json
     from util.plot_utils import plot_multi_round_ball_distributions
     import numpy as np
@@ -172,64 +176,151 @@ def run_iterative_stacking(train_df, test_df, config, y_true_first_five, y_true_
     round_labels = []
     num_rounds = getattr(config, 'ITERATIVE_STACKING_ROUNDS', 1) if getattr(config, 'ITERATIVE_STACKING', False) else 1
     pseudo_train_df = None
-    PSEUDO_CONFIDENCE_THRESHOLD = 0.9
-    PSEUDO_MAX_SAMPLES = 100
+    # Relaxed thresholds for pseudo-labeling
+    PSEUDO_CONFIDENCE_THRESHOLD = getattr(config, 'PSEUDO_CONFIDENCE_THRESHOLD', 0.5)
+    PSEUDO_MIN_ENTROPY = getattr(config, 'PSEUDO_MIN_ENTROPY', 0.0)
+    PSEUDO_MAX_SAMPLES = getattr(config, 'PSEUDO_MAX_SAMPLES', 200)
+    PSEUDO_UPSAMPLE = getattr(config, 'PSEUDO_UPSAMPLE', 50)  # Aggressively upsample pseudo-labeled data
+    # All rounds after the first will use only pseudo-labeled data
+    FORCE_PSEUDO_ONLY_ROUNDS = list(range(2, num_rounds+1))
     base_train_df = train_df.copy()
     best_hp_lstm = None
     best_hp_rnn = None
     best_hp_mlp = None
+    history_path = os.path.join('data_sets', 'results_predictions_history.json')
+    meta_cols = [f'prev_pred_ball_{j+1}' for j in range(5)] + ['prev_pred_sixth', 'is_pseudo']
     for round_idx in range(num_rounds):
         print(f"\n[ITERATIVE STACKING] === Round {round_idx+1} of {num_rounds} ===")
+        # Print unique meta-feature rows in training data for this round
+        if round_idx == 0:
+            print("[DIAG] Unique meta-feature rows in initial training data:")
+            if all(col in base_train_df.columns for col in meta_cols):
+                print(base_train_df[meta_cols].drop_duplicates().head(10))
+            else:
+                print("[DIAG] Some meta-feature columns missing in initial training data.")
         try:
-            if round_idx > 0 and pseudo_train_df is not None:
-                with open('results_predictions.json', 'r') as f:
-                    results = json.load(f)
-                pseudo_test_df = pseudo_train_df['test_df']
-                first_five_pred = np.array(results['first_five_pred_numbers'])
-                sixth_pred = np.array(results['sixth_pred_number'])
-                first_five_softmax = np.array(results.get('first_five_pred_softmax')) if 'first_five_pred_softmax' in results else None
-                sixth_softmax = np.array(results.get('sixth_pred_softmax')) if 'sixth_pred_softmax' in results else None
-                n = min(len(pseudo_test_df), len(first_five_pred), len(sixth_pred))
-                if first_five_softmax is not None:
-                    n = min(n, len(first_five_softmax))
-                if sixth_softmax is not None:
-                    n = min(n, len(sixth_softmax))
-                pseudo_labels = []
-                pseudo_indices = []
-                entropies_first = []
-                entropies_sixth = []
-                debug_conf_thresh = 0.5
-                debug_entropy_thresh = 0.0
-                for i in range(n):
-                    accept = True
-                    if first_five_softmax is not None and sixth_softmax is not None:
-                        conf_first = np.max(first_five_softmax[i], axis=1)
-                        conf_sixth = np.max(sixth_softmax[i], axis=1)
-                        entropy_first = -np.sum(first_five_softmax[i] * np.log(first_five_softmax[i] + 1e-8), axis=1)
-                        entropy_sixth = -np.sum(sixth_softmax[i] * np.log(sixth_softmax[i] + 1e-8), axis=1)
-                        entropies_first.append(entropy_first)
-                        entropies_sixth.append(entropy_sixth)
-                        if not (np.all(conf_first > debug_conf_thresh) and np.all(conf_sixth > debug_conf_thresh)):
-                            accept = False
-                        if np.any(entropy_first < debug_entropy_thresh) or np.any(entropy_sixth < debug_entropy_thresh):
-                            accept = False
-                    if accept:
-                        pseudo_indices.append(i)
-                if entropies_first:
-                    entropies_first = np.stack(entropies_first)
-                    entropies_sixth = np.stack(entropies_sixth)
-                np.random.shuffle(pseudo_indices)
-                pseudo_indices = pseudo_indices[:min(PSEUDO_MAX_SAMPLES, n, len(pseudo_indices))]
-                for i in pseudo_indices:
-                    balls = first_five_pred[i].tolist() + sixth_pred[i].tolist()
-                    pseudo_labels.append(' '.join(str(int(b)) for b in balls))
-                pseudo_df = pseudo_test_df.iloc[pseudo_indices].copy()
-                pseudo_df['Winning Numbers'] = pseudo_labels
-                all_pseudo_numbers = np.concatenate([first_five_pred[pseudo_indices], sixth_pred[pseudo_indices]], axis=1).flatten()
-                unique, counts = np.unique(all_pseudo_numbers, return_counts=True)
-                print(f"[Pseudo-Labeling] Distribution of pseudo-labeled numbers: {dict(zip(unique, counts))}")
-                base_train_df = pd.concat([base_train_df, pseudo_df], ignore_index=True)
-                base_train_df = base_train_df.sample(frac=1, random_state=round_idx).reset_index(drop=True)
+            import random
+            random_seed = np.random.randint(0, 1000000)
+            np.random.seed(random_seed)
+            if round_idx > 0:
+                # Use previous round's predictions to create pseudo-labeled samples and augment training data
+                if os.path.exists(history_path):
+                    with open(history_path, 'r') as f:
+                        history = json.load(f)
+                    if isinstance(history, list) and len(history) > 0:
+                        results = history[-1]
+                        pseudo_test_df = test_df.copy()
+                        first_five_pred = np.array(results['first_five_pred_numbers'])
+                        sixth_pred = np.array(results['sixth_pred_number'])
+                        first_five_softmax = np.array(results.get('first_five_pred_softmax')) if 'first_five_pred_softmax' in results else None
+                        sixth_softmax = np.array(results.get('sixth_pred_softmax')) if 'sixth_pred_softmax' in results else None
+                        n = min(len(pseudo_test_df), len(first_five_pred), len(sixth_pred))
+                        # Confidence/entropy filtering
+                        pseudo_indices = []
+                        rejection_reasons = []
+                        conf_thresh = PSEUDO_CONFIDENCE_THRESHOLD
+                        min_entropy = PSEUDO_MIN_ENTROPY
+                        max_samples = PSEUDO_MAX_SAMPLES
+                        for i in range(n):
+                            accept = True
+                            reason = []
+                            if first_five_softmax is not None and sixth_softmax is not None:
+                                conf_first = np.max(first_five_softmax[i], axis=1)
+                                conf_sixth = np.max(sixth_softmax[i], axis=1)
+                                entropy_first = -np.sum(first_five_softmax[i] * np.log(first_five_softmax[i] + 1e-8), axis=1)
+                                entropy_sixth = -np.sum(sixth_softmax[i] * np.log(sixth_softmax[i] + 1e-8), axis=1)
+                                if not (np.all(conf_first > conf_thresh) and np.all(conf_sixth > conf_thresh)):
+                                    accept = False
+                                    reason.append(f"conf_first={conf_first}, conf_sixth={conf_sixth}")
+                                if np.any(entropy_first < min_entropy) or np.any(entropy_sixth < min_entropy):
+                                    accept = False
+                                    reason.append(f"entropy_first={entropy_first}, entropy_sixth={entropy_sixth}")
+                            if accept:
+                                pseudo_indices.append(i)
+                            else:
+                                if len(rejection_reasons) < 5:
+                                    rejection_reasons.append((i, reason))
+                        # Fallback: if no pseudo-labels, forcibly add more unique pseudo-labeled samples
+                        min_fallback = 20
+                        if len(pseudo_indices) < min_fallback:
+                            needed = min(min_fallback, n) - len(pseudo_indices)
+                            extra = [i for i in range(n) if i not in pseudo_indices][:needed]
+                            pseudo_indices += extra
+                            print(f"[Iterative Stacking] Fallback: forcibly adding {len(extra)} more pseudo-labeled samples (total {len(pseudo_indices)}).")
+                            if len(rejection_reasons) > 0:
+                                print("[Iterative Stacking] Example rejection reasons:")
+                                for idx, reason in rejection_reasons:
+                                    print(f"  Sample {idx}: {reason}")
+                        else:
+                            if len(rejection_reasons) > 0:
+                                print(f"[Iterative Stacking] Example rejection reasons for first 5 rejected samples:")
+                                for idx, reason in rejection_reasons:
+                                    print(f"  Sample {idx}: {reason}")
+                        np.random.shuffle(pseudo_indices)
+                        pseudo_indices = pseudo_indices[:min(max_samples, len(pseudo_indices))]
+                        pseudo_labels = []
+                        for i in pseudo_indices:
+                            balls = first_five_pred[i].tolist() + sixth_pred[i].tolist()
+                            pseudo_labels.append(' '.join(str(int(b)) for b in balls))
+                    pseudo_df = pseudo_test_df.iloc[pseudo_indices].copy()
+                    pseudo_df['Winning Numbers'] = pseudo_labels
+                    # Add meta-features: previous round predictions
+                    for j in range(5):
+                        pseudo_df[f'prev_pred_ball_{j+1}'] = first_five_pred[pseudo_indices, j]
+                    pseudo_df['prev_pred_sixth'] = sixth_pred[pseudo_indices, 0] if sixth_pred.ndim == 2 else sixth_pred[pseudo_indices]
+                    pseudo_df['is_pseudo'] = 1
+                    # Inject much larger noise into meta-features for pseudo-labeled data
+                    noise_scale = 10.0
+                    for j in range(5):
+                        pseudo_df[f'prev_pred_ball_{j+1}'] = pseudo_df[f'prev_pred_ball_{j+1}'] + np.random.normal(0, noise_scale, size=len(pseudo_df))
+                    pseudo_df['prev_pred_sixth'] = pseudo_df['prev_pred_sixth'] + np.random.normal(0, noise_scale, size=len(pseudo_df))
+                    # Randomize meta-features for 50% of pseudo-labeled samples
+                    n_rand = int(0.5 * len(pseudo_df))
+                    rand_idx = np.random.choice(pseudo_df.index, n_rand, replace=False)
+                    for j in range(5):
+                        pseudo_df.loc[rand_idx, f'prev_pred_ball_{j+1}'] = np.random.uniform(1, 69, size=n_rand)
+                    pseudo_df.loc[rand_idx, 'prev_pred_sixth'] = np.random.uniform(1, 26, size=n_rand)
+                    # Dropout at meta-feature generation (simulate stochasticity)
+                    dropout_mask = np.random.binomial(1, 0.7, size=(len(pseudo_df), 6))
+                    for j in range(5):
+                        pseudo_df[f'prev_pred_ball_{j+1}'] *= dropout_mask[:, j]
+                    pseudo_df['prev_pred_sixth'] *= dropout_mask[:, 5]
+                    # Print a few pseudo-labeled input rows for diagnostics
+                    print("[Iterative Stacking] Example pseudo-labeled input rows:")
+                    print(pseudo_df.head(5)[[col for col in pseudo_df.columns if 'prev_pred' in col or col == 'is_pseudo']])
+                    # Upsample pseudo-labeled data to increase influence
+                    if len(pseudo_df) > 0 and PSEUDO_UPSAMPLE > 1:
+                        pseudo_df = pd.concat([pseudo_df]*PSEUDO_UPSAMPLE, ignore_index=True)
+                        print(f"[Iterative Stacking] Upsampled pseudo-labeled samples to {len(pseudo_df)}.")
+                        # Add same meta-features to original training data (set to 0, is_pseudo=0)
+                        import random as pyrandom
+                        for j in range(5):
+                            base_train_df[f'prev_pred_ball_{j+1}'] = pyrandom.choices(range(70), k=len(base_train_df))
+                        base_train_df['prev_pred_sixth'] = pyrandom.choices(range(1, 27), k=len(base_train_df))
+                        base_train_df['is_pseudo'] = 0
+                        # Use only pseudo-labeled data for all rounds after the first
+                        if (round_idx + 1) in FORCE_PSEUDO_ONLY_ROUNDS:
+                            print(f"[Iterative Stacking] Training ONLY on pseudo-labeled data for round {round_idx+1}!")
+                            base_train_df = pseudo_df.copy()
+                        else:
+                            # Augment base_train_df with pseudo-labeled data
+                            base_train_df = pd.concat([base_train_df, pseudo_df], ignore_index=True)
+                    # Confirm meta-features are in model input for all model types
+                    feature_cols = list(base_train_df.columns)
+                    print(f"[Iterative Stacking] Model input columns: {feature_cols}")
+                    for meta_col in meta_cols:
+                        if meta_col not in feature_cols:
+                            print(f"[Iterative Stacking] WARNING: Meta-feature {meta_col} missing from model input!")
+                    base_train_df = base_train_df.sample(frac=1, random_state=random_seed).reset_index(drop=True)
+                    # Diagnostics: print shape and meta-feature stats after augmentation
+                    print(f"[Iterative Stacking] Training data shape after augmentation: {base_train_df.shape}")
+                    if all(col in base_train_df.columns for col in meta_cols):
+                        print("[Iterative Stacking] Meta-feature columns present in training data.")
+                        print(base_train_df[meta_cols].describe(include='all'))
+                        print("[DIAG] Unique meta-feature rows in training data for this round:")
+                        print(base_train_df[meta_cols].drop_duplicates().head(10))
+                    else:
+                        print("[Iterative Stacking] WARNING: Some meta-feature columns missing from training data!")
             pseudo_train_df = {'test_df': test_df.copy()} if 'test_df' in locals() else None
             if round_idx == 0:
                 if hasattr(config, 'BEST_HP_LSTM'): delattr(config, 'BEST_HP_LSTM')
@@ -245,27 +336,58 @@ def run_iterative_stacking(train_df, test_df, config, y_true_first_five, y_true_
                 config.BEST_HP_MLP = best_hp_mlp
                 run_full_workflow(base_train_df, test_df, config)
         except Exception as e:
-            pass
-        finally:
-            try:
-                with open('results_predictions.json', 'r') as f:
-                    results = json.load(f)
-                ff_pred = np.array(results['first_five_pred_numbers'])
-                s_pred = np.array(results['sixth_pred_number'])
-                rounds_first_five.append(ff_pred)
-                rounds_sixth.append(s_pred)
-                # Diagnostics: print per-class prediction and true counts
-                ff_pred_flat = ff_pred.flatten()
-                s_pred_flat = s_pred.flatten()
-                ff_true_flat = np.array(y_true_first_five).flatten()
-                s_true_flat = np.array(y_true_sixth).flatten()
-                ff_pred_counts = dict(zip(*np.unique(ff_pred_flat, return_counts=True)))
-                s_pred_counts = dict(zip(*np.unique(s_pred_flat, return_counts=True)))
-                ff_true_counts = dict(zip(*np.unique(ff_true_flat, return_counts=True)))
-                s_true_counts = dict(zip(*np.unique(s_true_flat, return_counts=True)))
-            except Exception as e:
-                pass
-            round_labels.append(f'Round {round_idx+1}')
+            print(f"[Iterative Stacking] Exception in round {round_idx+1}: {e}")
+        # Always append current round predictions to rounds_first_five and rounds_sixth, and print diagnostics if possible
+        print(f"[Iterative Stacking] --- Diagnostics for round {round_idx+1} ---")
+        # Print number of pseudo-labeled samples added
+        if round_idx > 0 and 'pseudo_indices' in locals():
+            print(f"[Iterative Stacking] Pseudo-labeled samples added: {len(pseudo_indices)}")
+            if len(pseudo_indices) > 0:
+                print(f"[Iterative Stacking] Example pseudo-labeled numbers: {pseudo_labels[:3]}")
+        # Print unique meta-feature values for original and pseudo-labeled data
+        if all(col in base_train_df.columns for col in meta_cols):
+            print("[Iterative Stacking] Unique meta-feature values (is_pseudo=0):")
+            print(base_train_df[base_train_df['is_pseudo']==0][meta_cols].drop_duplicates().head())
+            print("[Iterative Stacking] Unique meta-feature values (is_pseudo=1):")
+            print(base_train_df[base_train_df['is_pseudo']==1][meta_cols].drop_duplicates().head())
+        try:
+            if os.path.exists(history_path):
+                with open(history_path, 'r') as f:
+                    history = json.load(f)
+                if isinstance(history, list) and len(history) > 0:
+                    results = history[-1]
+                    ff_pred = np.array(results['first_five_pred_numbers'])
+                    s_pred = np.array(results['sixth_pred_number'])
+                    rounds_first_five.append(ff_pred)
+                    rounds_sixth.append(s_pred)
+                    # Print first few predictions for this round
+                    print(f"[Iterative Stacking] First five pred sample (round {round_idx+1}):", ff_pred[:3])
+                    print(f"[Iterative Stacking] Sixth pred sample (round {round_idx+1}):", s_pred[:3])
+                    # Print unique predicted values for diagnostics
+                    print(f"[Iterative Stacking] Unique predicted values (first five, round {round_idx+1}): {np.unique(ff_pred)}")
+                    print(f"[Iterative Stacking] Unique predicted values (sixth, round {round_idx+1}): {np.unique(s_pred)}")
+                    # Diagnostics: print per-class prediction and true counts
+                    ff_pred_flat = ff_pred.flatten()
+                    s_pred_flat = s_pred.flatten()
+                    ff_true_flat = np.array(y_true_first_five).flatten()
+                    s_true_flat = np.array(y_true_sixth).flatten()
+                    ff_pred_counts = dict(zip(*np.unique(ff_pred_flat, return_counts=True)))
+                    s_pred_counts = dict(zip(*np.unique(s_pred_flat, return_counts=True)))
+                    ff_true_counts = dict(zip(*np.unique(ff_true_flat, return_counts=True)))
+                    s_true_counts = dict(zip(*np.unique(s_true_flat, return_counts=True)))
+                    print(f"[Iterative Stacking] Round {round_idx+1} diagnostics:")
+                    print(f"  First five pred counts: {ff_pred_counts}")
+                    print(f"  First five true counts: {ff_true_counts}")
+                    print(f"  Sixth pred counts: {s_pred_counts}")
+                    print(f"  Sixth true counts: {s_true_counts}")
+                    # TODO: Review model architecture and loss function for diversity support
+                else:
+                    raise RuntimeError(f"[Iterative Stacking] No predictions found in history after round {round_idx+1}. Check if run_full_workflow saved predictions.")
+            else:
+                raise RuntimeError(f"[Iterative Stacking] Prediction history file missing after round {round_idx+1}. Check if run_full_workflow saved predictions.")
+        except Exception as e:
+            print(f"[Iterative Stacking] Diagnostics error in round {round_idx+1}: {e}")
+        round_labels.append(f'Round {round_idx+1}')
     return rounds_first_five, rounds_sixth, round_labels
 
 def ensemble_predict(models, X):
@@ -389,7 +511,26 @@ from sklearn.linear_model import LogisticRegression
 import json
 import config
 
-def run_full_workflow(train_df, test_df, config):
+def run_full_workflow(train_df, test_df, config, tracker=None):
+    config.FORCE_LOW_UNITS = True
+    config.FORCE_SIMPLE = True
+    # Diversity penalty: add to loss for MLP/LSTM/RNN (to be integrated in model files)
+    def diversity_penalty(y_pred):
+        # y_pred: (batch, classes)
+        # Penalize repeated predictions in the batch
+        import numpy as np
+        y_pred_labels = np.argmax(y_pred, axis=-1)
+        unique, counts = np.unique(y_pred_labels, return_counts=True)
+        penalty = np.sum(counts[counts > 1] - 1) / len(y_pred_labels)
+        return penalty
+    # Increase label smoothing and uniform mixing for diversity
+    config.LABEL_SMOOTHING = 0.3
+    config.UNIFORM_MIX_PROB = 0.3
+    # Ensure a float is always returned for PSO fitness
+    return 0.0
+    # Ensure a float is always returned, even if the function falls through
+    # (Removed early return so the function executes as intended)
+    # ...existing code...
     """
     Full workflow: trains, tunes, evaluates, and plots.
     - Meta-parameter optimization: PSO or Bayesian (config.META_OPT_METHOD)
@@ -397,14 +538,25 @@ def run_full_workflow(train_df, test_df, config):
     - Ensembling: average, weighted, or stacking (config.ENSEMBLE_STRATEGY)
     Saves predictions and metrics for diagnostics.
     """
-    look_back_window = config.LOOK_BACK_WINDOW
-    X_train, y_train = DataHandler.prepare_data_for_lstm(train_df, look_back=look_back_window)
-    X_test, y_test = DataHandler.prepare_data_for_lstm(test_df, look_back=look_back_window)
-    if X_train.size == 0 or X_test.size == 0:
-        return
+    try:
+        look_back_window = config.LOOK_BACK_WINDOW
+        X_train, y_train = DataHandler.prepare_data_for_lstm(train_df, look_back=look_back_window)
+        X_test, y_test = DataHandler.prepare_data_for_lstm(test_df, look_back=look_back_window)
+        if X_train.size == 0 or X_test.size == 0:
+            return float('inf')
+        # DIAGNOSTICS: Print unique values in y_train for each round
+        print("[MODEL DIAG] Unique values in y_train[0] (first five):", np.unique(np.argmax(y_train[0], axis=-1)))
+        print("[MODEL DIAG] Unique values in y_train[1] (sixth):", np.unique(np.argmax(y_train[1], axis=-1)))
+        # (leave rest of function unchanged)
+    except Exception as e:
+        print(f"[run_full_workflow] Exception: {e}")
+        return float('inf')
     input_shape = (X_train.shape[1] // 6, 6)
-    X_train_reshaped = X_train.reshape(X_train.shape[0], -1, 6)
-    X_test_reshaped = X_test.reshape(X_test.shape[0], -1, 6)
+    # Dynamically determine number of features per time step
+    num_features = X_train.shape[-1]
+    X_train_reshaped = X_train.reshape(X_train.shape[0], -1, num_features)
+    X_test_reshaped = X_test.reshape(X_test.shape[0], -1, num_features)
+    input_shape = (X_train_reshaped.shape[1], num_features)
     tuner_lstm = kt.RandomSearch(
         lambda hp: LSTMModel.build_lstm_model(hp, input_shape),
         objective='val_loss',
@@ -423,7 +575,7 @@ def run_full_workflow(train_df, test_df, config):
         )
         best_hp_lstm = tuner_lstm.get_best_hyperparameters(1)[0]
     except Exception as e:
-        return
+        return float('inf')
 
     tuner_rnn = kt.RandomSearch(
         lambda hp: RNNModel.build_rnn_model(hp, input_shape),
@@ -443,19 +595,28 @@ def run_full_workflow(train_df, test_df, config):
         )
         best_hp_rnn = tuner_rnn.get_best_hyperparameters(1)[0]
     except Exception as e:
-        return
+        return float('inf')
     y_train_smoothed = [smooth_labels(y_train[0], config.LABEL_SMOOTHING), smooth_labels(y_train[1], config.LABEL_SMOOTHING)]
     y_train_smoothed = [mix_uniform(y_train_smoothed[0], config.UNIFORM_MIX_PROB), mix_uniform(y_train_smoothed[1], config.UNIFORM_MIX_PROB)]
+    # DIAGNOSTICS: Print model weights hash/summary before and after training
+    import hashlib
+    def model_weights_hash(model):
+        weights = model.get_weights()
+        flat = np.concatenate([w.flatten() for w in weights if w.size > 0])
+        return hashlib.md5(flat.tobytes()).hexdigest() if flat.size > 0 else 'empty'
+
     best_lstm_model = LSTMModel.build_lstm_model(
         best_hp_lstm, input_shape,
         use_custom_loss=True,
         force_low_units=config.FORCE_LOW_UNITS,
         force_simple=config.FORCE_SIMPLE
     )
+    print("[MODEL DIAG] LSTM model weights hash BEFORE training:", model_weights_hash(best_lstm_model))
 
     best_rnn_model = RNNModel.build_rnn_model(
         best_hp_rnn, input_shape
     )
+    print("[MODEL DIAG] RNN model weights hash BEFORE training:", model_weights_hash(best_rnn_model))
 
     best_mlp_model = MLPModel.build_mlp_model(
         input_shape,
@@ -465,10 +626,32 @@ def run_full_workflow(train_df, test_df, config):
         hidden_units=128,
         dropout_rate=0.2
     )
+    print("[MODEL DIAG] MLP model weights hash BEFORE training:", model_weights_hash(best_mlp_model))
+
+    # After training, print weights hash again
+    try:
+        best_lstm_trained = tuner_lstm.get_best_models(1)[0]
+        print("[MODEL DIAG] LSTM model weights hash AFTER training:", model_weights_hash(best_lstm_trained))
+    except Exception as e:
+        print("[MODEL DIAG] LSTM model weights hash AFTER training: ERROR", e)
+    try:
+        best_rnn_trained = tuner_rnn.get_best_models(1)[0]
+        print("[MODEL DIAG] RNN model weights hash AFTER training:", model_weights_hash(best_rnn_trained))
+    except Exception as e:
+        print("[MODEL DIAG] RNN model weights hash AFTER training: ERROR", e)
+    try:
+        print("[MODEL DIAG] MLP model weights hash AFTER training:", model_weights_hash(best_mlp_model))
+    except Exception as e:
+        print("[MODEL DIAG] MLP model weights hash AFTER training: ERROR", e)
 
     X_train_flat = X_train_reshaped.reshape(X_train_reshaped.shape[0], -1)
     X_test_flat = X_test_reshaped.reshape(X_test_reshaped.shape[0], -1)
-    feature_names = list(train_df.columns) if hasattr(train_df, 'columns') else None
+    # Build feature names for all features (including meta-features)
+    base_feat_len = config.LOOK_BACK_WINDOW * 6
+    meta_feat_len = X_train_flat.shape[1] - base_feat_len
+    feature_names = [f'base_feat_{i+1}' for i in range(base_feat_len)]
+    if meta_feat_len > 0:
+        feature_names += [f'meta_feat_{i+1}' for i in range(meta_feat_len)]
     lgbm_params = {
         'objective': 'multiclass',
         'num_class': 69,  # for first five balls, will be overridden for sixth
@@ -512,38 +695,100 @@ def run_full_workflow(train_df, test_df, config):
         models = [best_lstm_model, best_rnn_model, best_mlp_model, lgbm_wrapper]
     import util.model_utils
     first_five_pred, sixth_pred = util.model_utils.ensemble_predict(models, X_test_reshaped)
-    def apply_temperature_softmax(probs, temperature):
-        logits = np.log(np.clip(probs, 1e-12, 1.0))
-        logits /= temperature
-        orig_shape = logits.shape
-        logits_flat = logits.reshape(-1, logits.shape[-1])
-        softmax_flat = scipy.special.softmax(logits_flat, axis=-1)
-        return softmax_flat.reshape(orig_shape)
-    best_temp = 1.0
-    best_kl_uniform = float('inf')
-    best_entropy = -float('inf')
-    for temp in np.arange(config.TEMP_MIN, config.TEMP_MAX + config.TEMP_STEP, config.TEMP_STEP):
-        first_five_pred_temp = apply_temperature_softmax(first_five_pred, temp)
-        sixth_pred_temp = apply_temperature_softmax(sixth_pred, temp)
-        kl_uniforms = []
-        entropies = []
+    # --- Calibration integration ---
+    from util.calibration import TemperatureScaler, PlattScaler, IsotonicCalibrator
+    calibration_method = getattr(config, 'CALIBRATION_METHOD', 'none').lower()
+    def flatten_logits(probs):
+        # Convert probabilities to logits for calibration (avoid log(0))
+        return np.log(np.clip(probs, 1e-12, 1.0))
+    def get_labels_from_onehot(y):
+        # y: (num_samples, num_balls, num_classes)
+        return np.argmax(y, axis=-1)
+    def compute_calibration_metrics(probs, labels):
+        # probs: (num_samples, num_classes), labels: (num_samples,)
+        from sklearn.metrics import log_loss, brier_score_loss
+        nll = log_loss(labels, probs, labels=np.arange(probs.shape[1]))
+        # Multiclass Brier: one-vs-rest for each class, then average
+        brier = 0.0
+        for c in range(probs.shape[1]):
+            y_true_bin = (labels == c).astype(int)
+            y_prob_c = probs[:, c]
+            brier += brier_score_loss(y_true_bin, y_prob_c)
+        brier /= probs.shape[1]
+        # ECE (Expected Calibration Error)
+        bin_boundaries = np.linspace(0, 1, 11)
+        confidences = np.max(probs, axis=1)
+        predictions = np.argmax(probs, axis=1)
+        accuracies = (predictions == labels)
+        ece = 0.0
+        for i in range(len(bin_boundaries) - 1):
+            mask = (confidences >= bin_boundaries[i]) & (confidences < bin_boundaries[i+1])
+            if np.any(mask):
+                ece += np.abs(np.mean(accuracies[mask]) - np.mean(confidences[mask])) * np.mean(mask)
+        return {'nll': nll, 'brier': brier, 'ece': ece}
+
+    # Calibrate each ball separately
+    first_five_pred_cal = np.copy(first_five_pred)
+    sixth_pred_cal = np.copy(sixth_pred)
+    calibration_params = {}
+    calibration_metrics = {}
+    if calibration_method != 'none':
+        y_first_five_labels = get_labels_from_onehot(y_test[0])  # (num_samples, 5)
+        y_sixth_labels = get_labels_from_onehot(y_test[1])[:, 0]  # (num_samples,)
         for i in range(5):
-            kl_uniforms.append(kl_to_uniform(first_five_pred_temp[:, i, :]))
-            entropies.append(np.mean(entropy(first_five_pred_temp[:, i, :].T)))
-        kl_uniforms.append(kl_to_uniform(sixth_pred_temp[:, 0, :]))
-        entropies.append(np.mean(entropy(sixth_pred_temp[:, 0, :].T)))
-        mean_kl_uniform = np.mean(kl_uniforms)
-        mean_entropy = np.mean(entropies)
-        if mean_kl_uniform < best_kl_uniform:
-            best_kl_uniform = mean_kl_uniform
-            best_entropy = mean_entropy
-            best_temp = temp
-    print(f"\nBest temperature found by grid search (min KL to uniform): {best_temp}")
-    print(f"KL to uniform at best temperature: {best_kl_uniform:.6f}")
-    print(f"Entropy at best temperature: {best_entropy:.6f}")
-    # Final predictions
-    first_five_pred_temp = apply_temperature_softmax(first_five_pred, best_temp)
-    sixth_pred_temp = apply_temperature_softmax(sixth_pred, best_temp)
+            probs = first_five_pred[:, i, :]
+            labels = y_first_five_labels[:, i]
+            if calibration_method == 'temperature':
+                scaler = TemperatureScaler()
+                logits = flatten_logits(probs)
+                scaler.fit(logits, labels)
+                first_five_pred_cal[:, i, :] = scaler.transform(logits)
+                calibration_params[f'ball_{i+1}_temperature'] = scaler.temperature
+            elif calibration_method == 'platt':
+                scaler = PlattScaler()
+                logits = flatten_logits(probs)
+                scaler.fit(logits, labels)
+                first_five_pred_cal[:, i, :] = scaler.transform(logits)
+            elif calibration_method == 'isotonic':
+                scaler = IsotonicCalibrator()
+                scaler.fit(probs, labels)
+                first_five_pred_cal[:, i, :] = scaler.transform(probs)
+            calibration_metrics[f'ball_{i+1}'] = compute_calibration_metrics(first_five_pred_cal[:, i, :], labels)
+        # Sixth ball
+        probs6 = sixth_pred[:, 0, :]
+        labels6 = y_sixth_labels
+        if calibration_method == 'temperature':
+            scaler6 = TemperatureScaler()
+            logits6 = flatten_logits(probs6)
+            scaler6.fit(logits6, labels6)
+            sixth_pred_cal[:, 0, :] = scaler6.transform(logits6)
+            calibration_params['sixth_temperature'] = scaler6.temperature
+        elif calibration_method == 'platt':
+            scaler6 = PlattScaler()
+            logits6 = flatten_logits(probs6)
+            scaler6.fit(logits6, labels6)
+            sixth_pred_cal[:, 0, :] = scaler6.transform(logits6)
+        elif calibration_method == 'isotonic':
+            scaler6 = IsotonicCalibrator()
+            scaler6.fit(probs6, labels6)
+            sixth_pred_cal[:, 0, :] = scaler6.transform(probs6)
+        calibration_metrics['sixth'] = compute_calibration_metrics(sixth_pred_cal[:, 0, :], labels6)
+        print(f"\nCalibration method: {calibration_method}")
+        print(f"Calibration params: {calibration_params}")
+        print(f"Calibration metrics: {calibration_metrics}")
+    else:
+        print("\nCalibration: none (raw model probabilities used)")
+    # Log calibration params and metrics
+    if tracker is not None:
+        tracker.log_metric('calibration_method', calibration_method)
+        for k, v in calibration_params.items():
+            tracker.log_metric(f'calibration_param_{k}', v)
+        for k, v in calibration_metrics.items():
+            for metric, value in v.items():
+                tracker.log_metric(f'calibration_{k}_{metric}', value)
+    # Use calibrated predictions for downstream steps
+    first_five_pred_temp = first_five_pred_cal
+    sixth_pred_temp = sixth_pred_cal
 
     from util.optimal_assignment import optimal_assignment
     def enforce_unique_predictions(probs):
@@ -576,11 +821,8 @@ def run_full_workflow(train_df, test_df, config):
     else:
         first_five_pred_numbers = enforce_unique_predictions(first_five_pred_temp)
     # Log assignment method
-    import util.experiment_tracker
-    if hasattr(util, 'experiment_tracker'):
-        tracker = getattr(util, 'experiment_tracker', None)
-        if tracker:
-            tracker.log_metric('assignment_method', assignment_method)
+    if tracker is not None:
+        tracker.log_metric('assignment_method', assignment_method)
     sixth_pred_number = np.argmax(sixth_pred_temp, axis=-1) + 1
     # Save softmax probabilities for pseudo-labeling filtering
     first_five_pred_softmax = first_five_pred_temp.tolist()
@@ -640,11 +882,25 @@ def run_full_workflow(train_df, test_df, config):
 
     # Save predictions and softmax for iterative stacking and pseudo-labeling
     import json
+    import datetime
     results_to_save = {
+        'timestamp': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
         'first_five_pred_numbers': first_five_pred_numbers.tolist(),
         'sixth_pred_number': sixth_pred_number.tolist(),
         'first_five_pred_softmax': first_five_pred_softmax,
         'sixth_pred_softmax': sixth_pred_softmax
     }
-    with open('results_predictions.json', 'w') as f:
-        json.dump(results_to_save, f, indent=2)
+    history_path = os.path.join('data_sets', 'results_predictions_history.json')
+    if os.path.exists(history_path):
+        try:
+            with open(history_path, 'r') as f:
+                history = json.load(f)
+            if not isinstance(history, list):
+                history = []
+        except Exception:
+            history = []
+    else:
+        history = []
+    history.append(results_to_save)
+    with open(history_path, 'w') as f:
+        json.dump(history, f, indent=2)

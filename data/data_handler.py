@@ -176,41 +176,26 @@ class DataHandler:
         X = []
         y_first_five = []
         y_sixth = []
-        meta_features = []
         num_first = 5
         num_first_classes = 69
         num_sixth_classes = 26
-        use_meta = getattr(config, 'ITERATIVE_STACKING', False)
-        meta_preds = None
-        if use_meta and os.path.exists('results_predictions.json'):
-            try:
-                with open('results_predictions.json', 'r') as f:
-                    meta_preds = json.load(f)
-                meta_first = np.array(meta_preds.get('first_five_pred_numbers'))
-                meta_sixth = np.array(meta_preds.get('sixth_pred_number'))
-            except Exception as e:
-                print(f"[IterativeStacking] Could not load previous predictions: {e}")
-                meta_preds = None
-        # Determine meta-feature length for padding
-        meta_feat_len = 0
-        if meta_preds is not None:
-            meta_first_shape = meta_first.shape[1:] if meta_first is not None else (5,)
-            meta_sixth_shape = meta_sixth.shape[1:] if meta_sixth is not None else (1,)
-            meta_feat_len = np.prod(meta_first_shape) + np.prod(meta_sixth_shape)
+        # Identify meta-feature columns
+        meta_cols = [col for col in df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
         for i in range(len(winning_numbers) - look_back):
-            base_feat = np.concatenate(winning_numbers[i:(i + look_back)])
-            # Optionally append meta-features from previous predictions
-            if meta_preds is not None and i < len(meta_first):
-                meta_feat = np.concatenate([
-                    meta_first[i].flatten(),
-                    meta_sixth[i].flatten()
-                ])
-                X.append(np.concatenate([base_feat, meta_feat]))
-            elif meta_feat_len > 0:
-                # Pad with zeros if meta-features are expected but missing
-                X.append(np.concatenate([base_feat, np.zeros(meta_feat_len, dtype=np.float32)]))
-            else:
-                X.append(base_feat)
+            # For each time step in the look-back window, concatenate base features and meta-features
+            window_feats = []
+            for j in range(i, i + look_back):
+                base = np.array(winning_numbers[j])
+                meta = []
+                if meta_cols:
+                    meta_row = df.iloc[j][meta_cols] if j < len(df) else None
+                    if meta_row is not None:
+                        meta = meta_row.values.astype(np.float32)
+                if len(meta) > 0:
+                    window_feats.append(np.concatenate([base, meta]))
+                else:
+                    window_feats.append(base)
+            X.append(np.stack(window_feats))
             target_numbers = winning_numbers[i + look_back]
             # First 5 numbers one-hot (shape: 5, 69)
             first_five_onehot = np.zeros((num_first, num_first_classes), dtype=np.float32)

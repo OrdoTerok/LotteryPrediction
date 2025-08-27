@@ -14,6 +14,11 @@ def plot_multi_round_true_std(y_true, rounds_pred_list, prev_pred=None, num_ball
     """
     stds = []
     labels = []
+    print("[PLOT DIAG] plot_multi_round_true_std y_true (first 5):", y_true[:5])
+    if prev_pred is not None:
+        print("[PLOT DIAG] plot_multi_round_true_std prev_pred (first 5):", prev_pred[:5])
+    for idx, y_pred in enumerate(rounds_pred_list):
+        print(f"[PLOT DIAG] plot_multi_round_true_std round {idx+1} y_pred (first 5):", y_pred[:5])
     true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
     stds.append(true_stds)
     labels.append('True')
@@ -45,6 +50,11 @@ def plot_multi_round_pred_std(y_true, rounds_pred_list, prev_pred=None, num_ball
     """
     stds = []
     labels = []
+    print("[PLOT DIAG] plot_multi_round_pred_std y_true (first 5):", y_true[:5])
+    if prev_pred is not None:
+        print("[PLOT DIAG] plot_multi_round_pred_std prev_pred (first 5):", prev_pred[:5])
+    for idx, y_pred in enumerate(rounds_pred_list):
+        print(f"[PLOT DIAG] plot_multi_round_pred_std round {idx+1} y_pred (first 5):", y_pred[:5])
     true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
     stds.append(true_stds)
     labels.append('True')
@@ -70,9 +80,13 @@ def plot_multi_round_pred_std(y_true, rounds_pred_list, prev_pred=None, num_ball
     plt.tight_layout()
     plt.show()
 
-def kl_divergence(p, q):
+def kl_divergence(p, q, n_classes=None):
     p = np.asarray(p, dtype=np.float64)
     q = np.asarray(q, dtype=np.float64)
+    # If n_classes is provided, treat p and q as integer arrays and convert to distributions
+    if n_classes is not None:
+        p = np.bincount(p.astype(int)-1, minlength=n_classes) / len(p)
+        q = np.bincount(q.astype(int)-1, minlength=n_classes) / len(q)
     p = np.clip(p, 1e-12, 1)
     q = np.clip(q, 1e-12, 1)
     return np.sum(p * np.log(p / q))
@@ -92,9 +106,13 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
         prev_kls = [kl_divergence(true_dists[i], get_dist(prev_pred, i)) for i in range(num_balls)]
         kls.append(prev_kls)
         labels.append(prev_label)
+    print("[PLOT DIAG] plot_multi_round_kl_divergence y_true (first 5):", y_true[:5])
+    if prev_pred is not None:
+        print("[PLOT DIAG] plot_multi_round_kl_divergence prev_pred (first 5):", prev_pred[:5])
     for idx, y_pred in enumerate(rounds_pred_list):
-        round_kls = [kl_divergence(true_dists[i], get_dist(y_pred, i)) for i in range(num_balls)]
-        kls.append(round_kls)
+        print(f"[PLOT DIAG] plot_multi_round_kl_divergence round {idx+1} y_pred (first 5):", y_pred[:5])
+        kl = [kl_divergence(y_true[:, i], y_pred[:, i], n_classes) for i in range(num_balls)]
+        kls.append(kl)
         if round_labels and idx < len(round_labels):
             labels.append(round_labels[idx])
         else:
@@ -103,8 +121,8 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
     plt.figure(figsize=(10, 6))
     for i in range(kls.shape[1]):
         plt.plot(labels, kls[:, i], marker='o', label=f'Ball {i+1}')
-    plt.title('KL Divergence (True vs Predicted) per Ball Across Rounds and Previous Runs')
-    plt.xlabel('Source')
+    plt.title('KL Divergence per Ball Across Rounds')
+    plt.xlabel('Round')
     plt.ylabel('KL Divergence')
     plt.legend()
     plt.tight_layout()

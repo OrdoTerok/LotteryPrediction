@@ -1,3 +1,6 @@
+# --- Probability calibration ---
+# Options: 'none', 'temperature', 'platt', 'isotonic'
+CALIBRATION_METHOD = 'temperature'
 # --- Assignment method ---
 # Options: 'optimal' (Hungarian), 'greedy' (legacy uniqueness)
 ASSIGNMENT_METHOD = 'optimal'
