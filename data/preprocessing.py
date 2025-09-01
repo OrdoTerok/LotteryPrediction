@@ -6,16 +6,24 @@ import numpy as np
 import logging
 
 def combine_and_clean_data(df_datagov, df_kaggle):
-    print("Combining datasets...")
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("Combining datasets...")
     combined_df = pd.concat([df_datagov, df_kaggle], ignore_index=True)
     # Remove duplicate entries based on the draw date and winning numbers.
-    # Use 'Multiplier' if present, else just date and numbers
     subset_cols = [col for col in ['Draw Date', 'Winning Numbers', 'Multiplier'] if col in combined_df.columns]
+    if not subset_cols:
+        logger.error("No columns found for duplicate removal. Returning original combined DataFrame.")
+        return combined_df
     combined_df.drop_duplicates(subset=subset_cols, inplace=True)
-    combined_df['Draw Date'] = pd.to_datetime(combined_df['Draw Date'])
-    combined_df.sort_values(by='Draw Date', ascending=True, inplace=True)
-    combined_df.reset_index(drop=True, inplace=True)
-    print(f"Combined dataset contains {len(combined_df)} unique records.")
+    if 'Draw Date' in combined_df.columns:
+        combined_df['Draw Date'] = pd.to_datetime(combined_df['Draw Date'], errors='coerce')
+        combined_df = combined_df.dropna(subset=['Draw Date'])
+        combined_df.sort_values(by='Draw Date', ascending=True, inplace=True)
+        combined_df.reset_index(drop=True, inplace=True)
+    else:
+        logger.error("'Draw Date' column missing after combining. Skipping date conversion and sort.")
+    logger.info(f"Combined dataset contains {len(combined_df)} unique records.")
     return combined_df
 
 def save_to_file(df, file_path="data_sets/base_dataset.csv"):

@@ -17,14 +17,20 @@ from optimization.meta_search import MetaParameterSearch
 
 def main():
     # Setup logging and experiment tracking
-    setup_logging()
+    log_filename = setup_logging()
+    import config
+    if getattr(config, 'DEVELOPMENT_MODE', False):
+        import warnings
+        warnings.warn("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")
     tracker = ExperimentTracker()
     cache = Cache()
 
     # Orchestrate pipeline
-    print("[Pipeline] Starting LotteryPrediction modular pipeline...")
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("[Pipeline] Starting LotteryPrediction modular pipeline...")
     run_pipeline(config)
-    print("[Pipeline] Pipeline complete.")
+    logger.info("[Pipeline] Pipeline complete.")
 
 if __name__ == "__main__":
     main()

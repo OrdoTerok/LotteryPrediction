@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import logging
+logger = logging.getLogger(__name__)
 
 def plot_multi_run_ball_distributions(history, num_balls=5, n_classes=69, title_prefix='Ball', save_path=None):
     """
@@ -60,11 +62,11 @@ def plot_multi_run_kl_divergence(history, num_balls=5, n_classes=69, save_path=N
     Plot KL divergence per ball for all runs in history (vs. first run as reference).
     """
     if not history or len(history) < 2:
-        print("Need at least two runs for KL divergence plot.")
+        logger.warning("Need at least two runs for KL divergence plot.")
         return
     ref_preds = np.array(history[0].get('first_five_pred_numbers', []))
     if ref_preds.shape[0] == 0:
-        print("No reference predictions in first run.")
+        logger.warning("No reference predictions in first run.")
         return
     plt.figure(figsize=(10, 6))
     palette = plt.get_cmap('tab10')

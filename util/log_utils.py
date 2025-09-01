@@ -1,3 +1,25 @@
+import logging
+import datetime
+
+def setup_logging(log_filename=None):
+    """
+    Set up logging to a unique log file per execution, named log_TIMESTAMP.rtf.
+    """
+    import os
+    if log_filename is None:
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
+        log_dir = os.path.abspath(log_dir)
+        os.makedirs(log_dir, exist_ok=True)
+        log_filename = os.path.join(log_dir, f'log_{timestamp}.rtf')
+    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+    file_handler = logging.FileHandler(log_filename, mode='w', encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    logging.basicConfig(level=logging.INFO, handlers=[file_handler], force=True)
+    return log_filename
+
+def get_logger(name=None):
+    return logging.getLogger(name)
 """
 Logging utilities for saving PSO, KerasTuner, and evaluation results.
 """

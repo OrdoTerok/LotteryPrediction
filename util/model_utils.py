@@ -202,19 +202,17 @@ def run_meta_optimization(final_df, config):
         "LGBM_MAX_DEPTH"
     ]
     bounds = [
-        (0.0, 0.3),
-        (0.0, 0.3),
-        (0.5, 1.5),
-        (1.5, 2.5),
-        (1, 10),
-        (0.0, 1.0),
-        (0.0, 1.0),
-        (0.0, 1.0),  # JACCARD_LOSS_WEIGHT
-        (0.0, 1.0),  # DUPLICATE_PENALTY_WEIGHT
-        (0.0, 2.0),  # ANTI_COPY_PENALTY_WEIGHT (tune from 0 to 2)
-        (7, 127),
-        (0.01, 0.3),
-        (3, 12)
+    (0.0, 0.3),
+    (0.0, 0.3),
+    (0.5, 1.5),
+    (1.5, 2.5),
+    (1, 10),
+    (0.0, 1.0),
+    (0.0, 1.0),
+    (0.0, 2.0),  # ANTI_COPY_PENALTY_WEIGHT (tune from 0 to 2)
+    (7, 127),
+    (0.01, 0.3),
+    (3, 12)
     ]
     from optimization.meta_search import MetaParameterSearch
     from util.log_utils import get_logger
@@ -301,7 +299,9 @@ def ensemble_predict(models, X):
             shapes_first.append(pf.shape)
             shapes_sixth.append(ps.shape)
         except Exception as e:
-            print(f"  Model {idx} ({type(m)}): Exception during prediction: {e}")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"  Model {idx} ({type(m)}): Exception during prediction: {e}")
             preds_first.append(None)
             preds_sixth.append(None)
             shapes_first.append(None)

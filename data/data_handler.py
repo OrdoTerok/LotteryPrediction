@@ -3,39 +3,34 @@ import numpy as np
 import requests
 import os
 from typing import Tuple
-
 import datetime
+import logging
+logger = logging.getLogger(__name__)
+
 
 class DataHandler:
     @staticmethod
     def fetch_data_from_datagov(api_url):
         """
         Fetches Powerball data from the Data.gov API.
-
         Args:
             api_url (str): The URL of the Data.gov Powerball API.
-
         Returns:
-            pd.DataFrame: A DataFrame containing the fetched data, or an empty
-                          DataFrame if the request fails.
+            pd.DataFrame: A DataFrame containing the fetched data, or an empty DataFrame if the request fails.
         """
-        print("Fetching data from Data.gov API...")
+        logger.info("Fetching data from Data.gov API...")
         try:
             response = requests.get(api_url, timeout=10)
-            response.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
+            response.raise_for_status()
             data = response.json()
             df = pd.DataFrame(data)
-        
-            # Select and rename columns to a consistent format.
             if not df.empty:
                 df = df[['draw_date', 'winning_numbers', 'multiplier']]
-                df.rename(columns={'draw_date': 'Draw Date', 
-                                   'winning_numbers': 'Winning Numbers', 
-                                   'multiplier': 'Multiplier'}, inplace=True)
-                print("Successfully fetched and processed Data.gov data.")
+                df.rename(columns={'draw_date': 'Draw Date', 'winning_numbers': 'Winning Numbers', 'multiplier': 'Multiplier'}, inplace=True)
+                logger.info("Successfully fetched and processed Data.gov data.")
             return df
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching data from Data.gov: {e}")
+            logger.error(f"Error fetching data from Data.gov: {e}")
             return pd.DataFrame()
 
 
@@ -46,26 +41,23 @@ class DataHandler:
         Args:
             file_path (str): The path to the Kaggle CSV file.
         Returns:
-            pd.DataFrame: A DataFrame containing the loaded data, or an empty
-                          DataFrame if the file is not found.
+            pd.DataFrame: A DataFrame containing the loaded data, or an empty DataFrame if the file is not found.
         """
-        print(f"Attempting to load data from local file: {file_path}")
+        logger.info(f"Attempting to load data from local file: {file_path}")
         if not os.path.exists(file_path):
-            print(f"Error: The file '{file_path}' was not found.")
-            print("Please download the CSV from Kaggle and place it in the same directory.")
+            logger.error(f"Error: The file '{file_path}' was not found.")
+            logger.error("Please download the CSV from Kaggle and place it in the same directory.")
             return pd.DataFrame()
         try:
             df = pd.read_csv(file_path)
-            # Select and rename columns to a consistent format.
             if not df.empty:
                 df = df[['Date', 'Winning Numbers', 'Powerball']]
                 df.rename(columns={'Date': 'Draw Date'}, inplace=True)
-                # Ensure consistent column naming after rename
                 df.columns = ['Draw Date', 'Winning Numbers', 'Powerball']
-                print("Successfully loaded and processed Kaggle data.")
+                logger.info("Successfully loaded and processed Kaggle data.")
             return df
         except Exception as e:
-            print(f"Error reading the CSV file: {e}")
+            logger.error(f"Error reading the CSV file: {e}")
             return pd.DataFrame()
 
     @staticmethod
@@ -75,115 +67,50 @@ class DataHandler:
         """
         today = datetime.datetime.now().date()
         weekday = today.weekday()  # Monday=0, Sunday=6
-        # Powerball draws: Wednesday (2) and Saturday (5)
-        # Download on Thursday (3) or Sunday (6)
         download_today = (weekday == 3) or (weekday == 6)
         if download_today:
-            print("Today is the day after a Powerball draw. Downloading fresh data from Data.gov...")
+            logger.info("Today is the day after a Powerball draw. Downloading fresh data from Data.gov...")
             df = DataHandler.fetch_data_from_datagov(api_url)
-            # Optionally, save to CSV for future use
             if not df.empty:
                 df.to_csv(csv_path, index=False)
             return df
         else:
-            print("Not the day after a draw. Using saved data from CSV.")
+            logger.info("Not the day after a draw. Using saved data from CSV.")
             return DataHandler.load_data_from_kaggle(csv_path)
-        """
-        Only download from data.gov the day after a draw (Thursday or Sunday). Otherwise, use the saved CSV.
-        """
-        today = datetime.datetime.now().date()
-        weekday = today.weekday()  # Monday=0, Sunday=6
-        # Powerball draws: Wednesday (2) and Saturday (5)
-        # Download on Thursday (3) or Sunday (6)
-        download_today = (weekday == 3) or (weekday == 6)
-        if download_today:
-            print("Today is the day after a Powerball draw. Downloading fresh data from Data.gov...")
-            df = DataHandler.fetch_data_from_datagov(api_url)
-            # Optionally, save to CSV for future use
-            if not df.empty:
-                df.to_csv(csv_path, index=False)
-            return df
-        else:
-            print("Not the day after a draw. Using saved data from CSV.")
-            return DataHandler.load_data_from_kaggle(csv_path)
-        """
-        Loads Powerball data from a local Kaggle CSV file.
 
-        Args:
-            file_path (str): The path to the Kaggle CSV file.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing the loaded data, or an empty
-                          DataFrame if the file is not found.
-        """
-        print(f"Attempting to load data from local file: {file_path}")
-        if not os.path.exists(file_path):
-            print(f"Error: The file '{file_path}' was not found.")
-            print("Please download the CSV from Kaggle and place it in the same directory.")
-            return pd.DataFrame()
-
-        try:
-            df = pd.read_csv(file_path)
-
-            # Select and rename columns to a consistent format.
-            if not df.empty:
-                df = df[['Date', 'Winning Numbers', 'Powerball']]
-                df.rename(columns={'Date': 'Draw Date'}, inplace=True)
-                # Ensure consistent column naming after rename
-                df.columns = ['Draw Date', 'Winning Numbers', 'Powerball']
-                print("Successfully loaded and processed Kaggle data.")
-            return df
-        except Exception as e:
-            print(f"Error reading the CSV file: {e}")
-            return pd.DataFrame()
-
+    @staticmethod
     def combine_and_clean_data(df_datagov, df_kaggle):
         """
         Combines the two DataFrames, removes duplicates, and standardizes data types.
-
         Args:
             df_datagov (pd.DataFrame): DataFrame from Data.gov.
             df_kaggle (pd.DataFrame): DataFrame from Kaggle.
-
         Returns:
             pd.DataFrame: A single, cleaned DataFrame with combined data.
         """
-        print("Combining datasets...")
-    
-        # Concatenate the two dataframes.
+        logger.info("Combining datasets...")
         combined_df = pd.concat([df_datagov, df_kaggle], ignore_index=True)
-    
-        # Remove duplicate entries based on the draw date and winning numbers.
         combined_df.drop_duplicates(subset=['Draw Date', 'Winning Numbers', 'Multiplier'], inplace=True)
-
-        # Convert 'Draw Date' column to datetime objects for proper sorting.
         combined_df['Draw Date'] = pd.to_datetime(combined_df['Draw Date'])
-    
-        # Sort the combined data by date to have the most recent entries at the top.
         combined_df.sort_values(by='Draw Date', ascending=True, inplace=True)
-    
-        # Reset index after sorting and dropping duplicates.
         combined_df.reset_index(drop=True, inplace=True)
-
-        print(f"Combined dataset contains {len(combined_df)} unique records.")
+        logger.info(f"Combined dataset contains {len(combined_df)} unique records.")
         return combined_df
 
+    @staticmethod
     def save_to_file(df):
         """
-        Saves the given DataFrame to a Parquet file.
-    
+        Saves the given DataFrame to a CSV file.
         Args:
             df (pandas.DataFrame): The DataFrame to save.
-            file_path (str): The path where the Parquet file will be saved.
         """
-        import logging
-        logger = logging.getLogger(__name__)
         try:
             df.to_csv("data_sets/base_dataset.csv", index=False)
             logger.info(f"DataFrame successfully saved to data_sets/base_dataset.csv")
         except Exception as e:
             logger.error(f"Error saving DataFrame to CSV: {e}")
 
+    @staticmethod
     def split_dataframe_by_percentage(
         df: pd.DataFrame,
         percentage: float,
@@ -191,48 +118,25 @@ class DataHandler:
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Splits a pandas DataFrame into two sub-DataFrames based on a given percentage.
-
-        The split is performed by randomly sampling rows from the source DataFrame
-        to create the first sub-DataFrame. The remaining rows are then used to
-        create the second sub-DataFrame.
-
         Args:
             df (pd.DataFrame): The source DataFrame to be split.
-            percentage (float): The percentage of the source data to be included
-                            in the first DataFrame. This value should be between
-                            0.0 and 1.0.
-            random_state (int, optional): A seed for the random number generator.
-                                      Setting this ensures that the split is
-                                      reproducible. Defaults to None.
-
+            percentage (float): The percentage of the source data to be included in the first DataFrame. This value should be between 0.0 and 1.0.
+            random_state (int, optional): A seed for the random number generator. Setting this ensures that the split is reproducible. Defaults to None.
         Returns:
-            Tuple[pd.DataFrame, pd.DataFrame]: A tuple containing two new DataFrames.
-                                           The first DataFrame contains the
-                                           percentage-based split, and the second
-                                           contains the remaining data.
+            Tuple[pd.DataFrame, pd.DataFrame]: A tuple containing two new DataFrames. The first DataFrame contains the percentage-based split, and the second contains the remaining data.
         """
         if not 0.0 <= percentage <= 1.0:
             raise ValueError("Percentage must be a float between 0.0 and 1.0.")
-
-        # Sample the first DataFrame based on the given percentage (fraction).
-        # `random_state` ensures the split is the same every time the function is run.
         df1 = df.sample(frac=percentage, random_state=random_state)
-
-        # The second DataFrame is created by dropping the rows from the first one.
-        # This is an efficient way to get all the remaining rows.
         df2 = df.drop(df1.index)
-
         return df1, df2
 
+    @staticmethod
     def prepare_data_for_lstm(df: pd.DataFrame, look_back: int) -> Tuple[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
         Prepares time series data for an LSTM model with one-hot encoded targets for categorical crossentropy.
-
-        The first 5 numbers are one-hot encoded with 69 classes (1-69),
-        and the 6th number (Powerball) is one-hot encoded with 26 classes (1-26).
-
+        The first 5 numbers are one-hot encoded with 69 classes (1-69), and the 6th number (Powerball) is one-hot encoded with 26 classes (1-26).
         If config.ITERATIVE_STACKING is True and previous predictions exist, appends them as meta-features.
-
         Returns:
             Tuple[np.ndarray, Tuple[np.ndarray, np.ndarray]]: (X, (y_first_five, y_sixth))
                 - X: features (optionally with meta-features)
@@ -243,17 +147,14 @@ class DataHandler:
         import json
         df = df.sort_values(by='Draw Date')
         winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
-
         X = []
         y_first_five = []
         y_sixth = []
         num_first = 5
         num_first_classes = 69
         num_sixth_classes = 26
-        # Identify meta-feature columns
         meta_cols = [col for col in df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
         for i in range(len(winning_numbers) - look_back):
-            # For each time step in the look-back window, concatenate base features and meta-features
             window_feats = []
             for j in range(i, i + look_back):
                 base = np.array(winning_numbers[j])
@@ -268,13 +169,11 @@ class DataHandler:
                     window_feats.append(base)
             X.append(np.stack(window_feats))
             target_numbers = winning_numbers[i + look_back]
-            # First 5 numbers one-hot (shape: 5, 69)
             first_five_onehot = np.zeros((num_first, num_first_classes), dtype=np.float32)
             for j, n in enumerate(target_numbers[:num_first]):
                 if 1 <= n <= num_first_classes:
                     first_five_onehot[j, n - 1] = 1.0
             y_first_five.append(first_five_onehot)
-            # Sixth number one-hot (shape: 1, 26)
             sixth_onehot = np.zeros((1, num_sixth_classes), dtype=np.float32)
             n6 = target_numbers[num_first]
             if 1 <= n6 <= num_sixth_classes:
