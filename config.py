@@ -88,16 +88,28 @@ EARLY_STOPPING_PATIENCE = 3  # PSO meta-param
 FORCE_LOW_UNITS = True
 FORCE_SIMPLE = True
 
+
+# --- Development/Production mode switch ---
+DEVELOPMENT_MODE = True  # Set to False for final runs
+
 # --- Temperature grid search (PSO meta-params)
 TEMP_MIN = 0.5
 TEMP_MAX = 2.0
 TEMP_STEP = 0.1
 
 # --- PSO and KerasTuner search sizes ---
-PSO_PARTICLES = 3  # For quick test, increase for final runs
-PSO_ITER = 3
-KERAS_TUNER_MAX_TRIALS = 10
-KERAS_TUNER_EXECUTIONS_PER_TRIAL = 1
+if DEVELOPMENT_MODE:
+	PSO_PARTICLES = 3
+	PSO_ITER = 3
+	KERAS_TUNER_MAX_TRIALS = 10
+	KERAS_TUNER_EXECUTIONS_PER_TRIAL = 1
+	import warnings
+	warnings.warn("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")
+else:
+	PSO_PARTICLES = 30
+	PSO_ITER = 50
+	KERAS_TUNER_MAX_TRIALS = 100
+	KERAS_TUNER_EXECUTIONS_PER_TRIAL = 2
 
 # --- Random seed (optional) ---
 RANDOM_SEED = 42

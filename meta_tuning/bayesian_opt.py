@@ -34,7 +34,7 @@ def bayesian_optimize(var_names, bounds, final_df, n_trials=10):
 		return fitness
 
 	study = optuna.create_study(direction="minimize")
-	study.optimize(objective, n_trials=n_trials)
+	study.optimize(objective, n_trials=n_trials, n_jobs=-1)
 	best_params = [study.best_params[name] for name in var_names]
 	print("[BayesianOpt] Best params:", study.best_params)
 	return best_params

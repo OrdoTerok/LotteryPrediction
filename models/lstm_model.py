@@ -1,4 +1,3 @@
-
 import tensorflow as tf
 import numpy as np
 import keras_tuner as kt
@@ -219,13 +218,27 @@ class LSTMModel:
         logger = logging.getLogger(__name__)
         logger.info("\nStarting model training...")
         callback = LSTMModel.LoggingCallback(logger)
+        from tensorflow.keras.callbacks import EarlyStopping
+        early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
         model.fit(
             X_train_reshaped,
             {'first_five': y_train[0], 'sixth': y_train[1]},
             epochs=20,
             batch_size=32,
             verbose=0,
-            callbacks=[callback]
+            callbacks=[callback, early_stop]
         )
         logger.info("Model training complete.")
         return model
+
+    def __init__(self, input_shape, hp=None, use_custom_loss=False, force_low_units=False, force_simple=False):
+        self.model = self.build_lstm_model(hp or kt.HyperParameters(), input_shape, use_custom_loss, force_low_units, force_simple)
+
+    def fit(self, X, y, **kwargs):
+        return self.model.fit(X, y, **kwargs)
+
+    def predict(self, X, **kwargs):
+        return self.model.predict(X, **kwargs)
+
+    def evaluate(self, X, y, **kwargs):
+        return self.model.evaluate(X, y, **kwargs)

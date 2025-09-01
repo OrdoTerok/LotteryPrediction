@@ -1,9 +1,108 @@
 import lightgbm as lgb
 import numpy as np
+from models.base_model import BaseModel
 
-class LightGBMModel:
-    @staticmethod
-    def build_lgbm_models(num_first=5, num_first_classes=69, num_sixth_classes=26, params=None):
+class LightGBMModel(BaseModel):
+    def __init__(self, num_first=5, num_first_classes=69, num_sixth_classes=26, params=None):
+        self.num_first = num_first
+        self.num_first_classes = num_first_classes
+        self.num_sixth_classes = num_sixth_classes
+        self.params = params if params is not None else {
+            'objective': 'multiclass',
+            'num_class': num_first_classes,
+            'metric': 'multi_logloss',
+            'verbosity': -1
+        }
+        self.models_first = [lgb.LGBMClassifier(**self.params) for _ in range(self.num_first)]
+        params6 = self.params.copy()
+        params6['num_class'] = num_sixth_classes
+        self.model_sixth = lgb.LGBMClassifier(**params6)
+
+    def fit(self, X, y, **kwargs):
+        y_first, y_sixth = y
+        if y_first.ndim == 3:
+            y_first = np.argmax(y_first, axis=-1)
+        if y_sixth.ndim == 3:
+            y_sixth = np.argmax(y_sixth, axis=-1)
+        num_first_classes = self.num_first_classes
+        num_sixth_classes = self.num_sixth_classes
+        for i, model in enumerate(self.models_first):
+            y_col = y_first[:, i]
+            missing_classes = set(range(num_first_classes)) - set(np.unique(y_col))
+            fit_kwargs = {'early_stopping_rounds': 10, 'eval_metric': 'multi_logloss', 'verbose': False}
+            fit_kwargs.update(kwargs)
+            if missing_classes:
+                X_dummy = np.repeat(X[:1], len(missing_classes), axis=0)
+                y_dummy = np.array(list(missing_classes))
+                X_aug = np.concatenate([X, X_dummy], axis=0)
+                y_aug = np.concatenate([y_col, y_dummy], axis=0)
+                model.fit(X_aug, y_aug, **fit_kwargs)
+            else:
+                model.fit(X, y_col, **fit_kwargs)
+        y6 = y_sixth[:, 0]
+        missing_classes6 = set(range(num_sixth_classes)) - set(np.unique(y6))
+        fit_kwargs6 = {'early_stopping_rounds': 10, 'eval_metric': 'multi_logloss', 'verbose': False}
+        fit_kwargs6.update(kwargs)
+        if missing_classes6:
+            X_dummy6 = np.repeat(X[:1], len(missing_classes6), axis=0)
+            y_dummy6 = np.array(list(missing_classes6))
+            X_aug6 = np.concatenate([X, X_dummy6], axis=0)
+            y_aug6 = np.concatenate([y6, y_dummy6], axis=0)
+            self.model_sixth.fit(X_aug6, y_aug6, **fit_kwargs6)
+        else:
+            self.model_sixth.fit(X, y6, **fit_kwargs6)
+
+    def predict(self, X, feature_names=None, **kwargs):
+        import pandas as pd
+        if feature_names is not None and not isinstance(X, pd.DataFrame):
+            if len(feature_names) == X.shape[1]:
+                X = pd.DataFrame(X, columns=feature_names)
+            else:
+                X = pd.DataFrame(X)
+        preds = []
+        for idx, model in enumerate(self.models_first):
+            try:
+                pred = model.predict_proba(X)
+                preds.append(pred)
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
+                raise
+        try:
+            first_five_pred = np.stack(preds, axis=1)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[ERROR][LGBM] Exception during np.stack for first_five_pred: {e}")
+            raise
+        try:
+            sixth_pred = self.model_sixth.predict_proba(X)[:, np.newaxis, :]
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
+            raise
+        return first_five_pred, sixth_pred
+
+    def evaluate(self, X, y, feature_names=None, **kwargs):
+        # Returns log loss for each ball and sixth
+        from sklearn.metrics import log_loss
+        first_five_pred, sixth_pred = self.predict(X, feature_names=feature_names, **kwargs)
+        y_first, y_sixth = y
+        if y_first.ndim == 3:
+            y_first = np.argmax(y_first, axis=-1)
+        if y_sixth.ndim == 3:
+            y_sixth = np.argmax(y_sixth, axis=-1)
+        losses = []
+        for i in range(self.num_first):
+            y_true = y_first[:, i]
+            y_pred = first_five_pred[:, i, :]
+            losses.append(log_loss(y_true, y_pred))
+        y_true6 = y_sixth[:, 0]
+        y_pred6 = sixth_pred[:, 0, :]
+        losses.append(log_loss(y_true6, y_pred6))
+        return losses
         """
         Builds one LightGBM multiclass classifier for each lottery ball (first five and sixth).
         Args:
@@ -47,24 +146,26 @@ class LightGBMModel:
         for i, model in enumerate(models_first):
             y_col = y_first[:, i]
             missing_classes = set(range(num_first_classes)) - set(np.unique(y_col))
+            fit_kwargs = {'early_stopping_rounds': 10, 'eval_metric': 'multi_logloss', 'verbose': False}
             if missing_classes:
                 X_dummy = np.repeat(X[:1], len(missing_classes), axis=0)
                 y_dummy = np.array(list(missing_classes))
                 X_aug = np.concatenate([X, X_dummy], axis=0)
                 y_aug = np.concatenate([y_col, y_dummy], axis=0)
-                model.fit(X_aug, y_aug)
+                model.fit(X_aug, y_aug, **fit_kwargs)
             else:
-                model.fit(X, y_col)
+                model.fit(X, y_col, **fit_kwargs)
         y6 = y_sixth[:, 0]
         missing_classes6 = set(range(num_sixth_classes)) - set(np.unique(y6))
+        fit_kwargs6 = {'early_stopping_rounds': 10, 'eval_metric': 'multi_logloss', 'verbose': False}
         if missing_classes6:
             X_dummy6 = np.repeat(X[:1], len(missing_classes6), axis=0)
             y_dummy6 = np.array(list(missing_classes6))
             X_aug6 = np.concatenate([X, X_dummy6], axis=0)
             y_aug6 = np.concatenate([y6, y_dummy6], axis=0)
-            model_sixth.fit(X_aug6, y_aug6)
+            model_sixth.fit(X_aug6, y_aug6, **fit_kwargs6)
         else:
-            model_sixth.fit(X, y6)
+            model_sixth.fit(X, y6, **fit_kwargs6)
 
     @staticmethod
     def predict_proba(models_first, model_sixth, X, feature_names=None):

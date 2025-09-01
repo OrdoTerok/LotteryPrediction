@@ -37,6 +37,8 @@ class RNNModel:
         sixth_reshape = layers.Reshape((1, 26))(sixth_dense)
         sixth_softmax = layers.Softmax(axis=-1, name='sixth')(sixth_reshape)
         model = Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
+        from tensorflow.keras.callbacks import EarlyStopping
+        model.early_stopping_callback = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
         if optimizer_choice == 'adam':
             opt = tf.keras.optimizers.Adam(learning_rate)
         elif optimizer_choice == 'rmsprop':
@@ -152,3 +154,15 @@ class RNNModel:
                 batch_size = 32
             model._tuner_batch_size = batch_size
         return model
+
+    def __init__(self, input_shape, hp=None, use_custom_loss=False, units=64, num_layers=1, dropout=0.2, use_bidirectional=False, optimizer='adam', learning_rate=1e-3):
+        self.model = self.build_rnn_model(hp, input_shape, units, num_layers, dropout, use_bidirectional, optimizer, learning_rate, use_custom_loss)
+
+    def fit(self, X, y, **kwargs):
+        return self.model.fit(X, y, **kwargs)
+
+    def predict(self, X, **kwargs):
+        return self.model.predict(X, **kwargs)
+
+    def evaluate(self, X, y, **kwargs):
+        return self.model.evaluate(X, y, **kwargs)

@@ -147,10 +147,12 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 	global_best_position = None
 	global_best_fitness = float('inf')
 
+	from joblib import Parallel, delayed
 	for iter in range(n_iter):
 		print(f"[PSO] Iteration {iter+1}/{n_iter}")
-		for idx, particle in enumerate(particles):
-			fitness = particle.evaluate(lambda: fitness_func(train_df, test_df))
+		# Parallel fitness evaluation
+		fitnesses = Parallel(n_jobs=-1)(delayed(lambda p: p.evaluate(lambda: fitness_func(train_df, test_df)))(particle) for particle in particles)
+		for idx, (particle, fitness) in enumerate(zip(particles, fitnesses)):
 			print(f"[PSO] Particle {idx+1} fitness: {fitness:.6f}")
 			if fitness < global_best_fitness:
 				global_best_fitness = fitness
