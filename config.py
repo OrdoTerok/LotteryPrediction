@@ -1,3 +1,6 @@
+# --- Anti-copying penalty ---
+# Penalty weight for copying meta-features in predictions (tuned by meta-optimization)
+ANTI_COPY_PENALTY_WEIGHT = 1.0
 # --- Probability calibration ---
 # Options: 'none', 'temperature', 'platt', 'isotonic'
 CALIBRATION_METHOD = 'temperature'

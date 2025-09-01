@@ -91,16 +91,22 @@ class LightGBMModel:
                 pred = model.predict_proba(X)
                 preds.append(pred)
             except Exception as e:
-                print(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
                 raise
         try:
             first_five_pred = np.stack(preds, axis=1)
         except Exception as e:
-            print("[ERROR][LGBM] Exception during np.stack for first_five_pred:", e)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[ERROR][LGBM] Exception during np.stack for first_five_pred: {e}")
             raise
         try:
             sixth_pred = model_sixth.predict_proba(X)[:, np.newaxis, :]
         except Exception as e:
-            print("[ERROR][LGBM] Exception during model_sixth.predict_proba:", e)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
             raise
         return first_five_pred, sixth_pred

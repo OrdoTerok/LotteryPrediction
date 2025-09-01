@@ -1,3 +1,8 @@
+import logging
+
+# Use the logger from the main application
+logger = logging.getLogger(__name__)
+
 def plot_multi_round_powerball_distribution(y_true, rounds_pred_list, prev_pred=None, n_classes=26, title='Powerball (6th Ball) Distribution', round_labels=None, prev_label='Previous'):
     """
     Plot the distribution of true Powerball values, each round's predictions, and optionally previous predictions.
@@ -17,11 +22,11 @@ def plot_multi_round_powerball_distribution(y_true, rounds_pred_list, prev_pred=
     x = np.arange(1, n_classes + 1)
     width = 0.8 / (2 + len(rounds_pred_list))
     offsets = np.linspace(-width * (1 + len(rounds_pred_list)) / 2, width * (1 + len(rounds_pred_list)) / 2, 2 + len(rounds_pred_list))
-    print("[PLOT DIAG] y_true (first 5):", y_true[:5])
+    logger.info("[PLOT DIAG] y_true (first 5): %s", y_true[:5])
     if prev_pred is not None:
-        print("[PLOT DIAG] prev_pred (first 5):", prev_pred[:5])
+        logger.info("[PLOT DIAG] prev_pred (first 5): %s", prev_pred[:5])
     for idx, y_pred in enumerate(rounds_pred_list):
-        print(f"[PLOT DIAG] round {idx+1} y_pred (first 5):", y_pred[:5])
+        logger.info(f"[PLOT DIAG] round {idx+1} y_pred (first 5): %s", y_pred[:5])
     true_counts = np.bincount(y_true[:, 0] - 1, minlength=n_classes)
     plt.bar(x + offsets[0], true_counts, width=width, color='blue', label='True', align='center')
     idx_offset = 1
@@ -29,8 +34,19 @@ def plot_multi_round_powerball_distribution(y_true, rounds_pred_list, prev_pred=
         prev_counts = np.bincount(prev_pred[:, 0] - 1, minlength=n_classes)
         plt.bar(x + offsets[1], prev_counts, width=width, color='black', label=prev_label, align='center')
         idx_offset += 1
+    # Ensure unique labels
+    used_labels = set()
+    def make_unique(label):
+        orig = label
+        count = 2
+        while label in used_labels:
+            label = f"{orig} ({count})"
+            count += 1
+        used_labels.add(label)
+        return label
     for idx, y_pred in enumerate(rounds_pred_list):
         label = round_labels[idx] if round_labels and idx < len(round_labels) else f'Round {idx+1}'
+        label = make_unique(label)
         color = palette((idx + 2) % 10)
         round_counts = np.bincount(y_pred[:, 0] - 1, minlength=n_classes)
         plt.bar(x + offsets[idx + idx_offset], round_counts, width=width, color=color, label=label, align='center')
@@ -57,11 +73,11 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
     import numpy as np
     palette = plt.get_cmap('tab10')
     for i in range(num_balls):
-        print(f"[PLOT DIAG] Ball {i+1} y_true (first 5):", y_true[:5, i])
+        logger.info(f"[PLOT DIAG] Ball {i+1} y_true (first 5): %s", y_true[:5, i])
         if prev_pred is not None:
-            print(f"[PLOT DIAG] Ball {i+1} prev_pred (first 5):", prev_pred[:5, i])
+            logger.info(f"[PLOT DIAG] Ball {i+1} prev_pred (first 5): %s", prev_pred[:5, i])
         for idx, y_pred in enumerate(rounds_pred_list):
-            print(f"[PLOT DIAG] Ball {i+1} round {idx+1} y_pred (first 5):", y_pred[:5, i])
+            logger.info(f"[PLOT DIAG] Ball {i+1} round {idx+1} y_pred (first 5): %s", y_pred[:5, i])
         plt.figure(figsize=(12, 5))
         x = np.arange(1, n_classes + 1)
         width = 0.8 / (2 + len(rounds_pred_list))  # bar width
@@ -73,8 +89,19 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
             prev_counts = np.bincount(prev_pred[:, i] - 1, minlength=n_classes)
             plt.bar(x + offsets[1], prev_counts, width=width, color='black', label=prev_label, align='center')
             idx_offset += 1
+        # Ensure unique labels per plot
+        used_labels = set()
+        def make_unique(label):
+            orig = label
+            count = 2
+            while label in used_labels:
+                label = f"{orig} ({count})"
+                count += 1
+            used_labels.add(label)
+            return label
         for idx, y_pred in enumerate(rounds_pred_list):
             label = round_labels[idx] if round_labels and idx < len(round_labels) else f'Round {idx+1}'
+            label = make_unique(label)
             color = palette((idx + 2) % 10)
             round_counts = np.bincount(y_pred[:, i] - 1, minlength=n_classes)
             plt.bar(x + offsets[idx + idx_offset], round_counts, width=width, color=color, label=label, align='center')

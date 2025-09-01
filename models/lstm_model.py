@@ -2,8 +2,21 @@
 import tensorflow as tf
 import numpy as np
 import keras_tuner as kt
+from tensorflow.keras import backend as K
 
 class LSTMModel:
+    class LoggingCallback(tf.keras.callbacks.Callback):
+        def __init__(self, logger):
+            super().__init__()
+            self.logger = logger
+        def on_epoch_begin(self, epoch, logs=None):
+            self.logger.info(f"Epoch {epoch+1} started.")
+        def on_epoch_end(self, epoch, logs=None):
+            log_str = f"Epoch {epoch+1} end: " + ', '.join([f"{k}: {v:.4f}" for k, v in (logs or {}).items()])
+            self.logger.info(log_str)
+        def on_train_batch_end(self, batch, logs=None):
+            log_str = f"Batch {batch+1}: " + ', '.join([f"{k}: {v:.4f}" for k, v in (logs or {}).items()])
+            self.logger.info(log_str)
     @staticmethod
     def build_lstm_model(hp, input_shape, use_custom_loss=False, force_low_units=False, force_simple=False):
         """
@@ -20,18 +33,19 @@ class LSTMModel:
         num_first_classes = 69
         num_sixth_classes = 26
         inputs = tf.keras.Input(shape=input_shape)
+        x = tf.keras.layers.GaussianNoise(0.5)(inputs)
         if force_simple:
             units = 64
-            x = tf.keras.layers.SimpleRNN(units=units, activation='relu')(inputs)
+            x = tf.keras.layers.SimpleRNN(units=units, activation='relu')(x)
         else:
             units = 128 if force_low_units else hp.Int('units', min_value=64, max_value=256, step=32)
             use_bidirectional = hp.Boolean('bidirectional', default=True)
-            dropout_rate = hp.Float('dropout', min_value=0.0, max_value=0.5, step=0.1, default=0.2)
+            dropout_rate = hp.Float('dropout', min_value=0.3, max_value=0.7, step=0.1, default=0.5)
             lstm1 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=True)
             if use_bidirectional:
-                x = tf.keras.layers.Bidirectional(lstm1)(inputs)
+                x = tf.keras.layers.Bidirectional(lstm1)(x)
             else:
-                x = lstm1(inputs)
+                x = lstm1(x)
             x = tf.keras.layers.Dropout(dropout_rate)(x)
             lstm2 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=False)
             if use_bidirectional:
@@ -39,6 +53,12 @@ class LSTMModel:
             else:
                 x = lstm2(x)
             x = tf.keras.layers.Dropout(dropout_rate)(x)
+        def diversity_penalty(y_pred):
+            # Penalize repeated predictions in the batch
+            pred_idx = tf.argmax(y_pred, axis=-1)
+            unique, _, count = tf.unique_with_counts(tf.reshape(pred_idx, [-1]))
+            penalty = tf.reduce_sum(tf.cast(count > 1, tf.float32) * (tf.cast(count, tf.float32) - 1)) / tf.cast(tf.size(pred_idx), tf.float32)
+            return penalty
         first_five_dense = tf.keras.layers.Dense(num_first * num_first_classes)(x)
         first_five_reshaped = tf.keras.layers.Reshape((num_first, num_first_classes))(first_five_dense)
         first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
@@ -65,7 +85,6 @@ class LSTMModel:
 
         if use_custom_loss:
             import config
-            import tensorflow.keras.backend as K
             penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
             entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)
             jaccard_weight = getattr(config, 'JACCARD_LOSS_WEIGHT', 0.0)
@@ -80,7 +99,7 @@ class LSTMModel:
 
             def entropy_reg(y_pred):
                 ent = -K.sum(y_pred * K.log(y_pred + 1e-8), axis=-1)
-                return -K.mean(ent)
+                return K.mean(ent)
 
             def jaccard_loss(y_true, y_pred):
                 # y_true, y_pred: (batch, balls, classes)
@@ -94,12 +113,23 @@ class LSTMModel:
             def duplicate_penalty(y_pred):
                 # Penalize if same class is predicted for multiple balls in a ticket
                 # y_pred: (batch, balls, classes)
+                if y_pred.shape[1] < 2:
+                    return 0.0
                 pred_idx = tf.argmax(y_pred, axis=-1)  # (batch, balls)
                 penalty = 0.0
                 for i in range(y_pred.shape[1]):
                     for j in range(i+1, y_pred.shape[1]):
                         penalty += tf.reduce_mean(tf.cast(tf.equal(pred_idx[:, i], pred_idx[:, j]), tf.float32))
                 return penalty / (y_pred.shape[1] * (y_pred.shape[1] - 1) / 2)
+
+
+            def anti_copying_penalty(y_pred, meta_features=None):
+                if meta_features is None:
+                    return 0.0
+                pred_idx = tf.argmax(y_pred, axis=-1)
+                meta_features = tf.cast(meta_features, tf.int64)
+                penalty = tf.reduce_mean(tf.cast(tf.equal(pred_idx, meta_features), tf.float32))
+                return penalty
 
             def first_five_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
@@ -108,7 +138,13 @@ class LSTMModel:
                 entropy_pen = entropy_reg(y_pred)
                 jac = jaccard_loss(y_true, y_pred)
                 dup_pen = duplicate_penalty(y_pred)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen
+                div_pen = diversity_penalty(y_pred)
+                meta_features = None
+                if hasattr(y_true, '_keras_mask') and hasattr(y_true._keras_mask, 'meta_features'):
+                    meta_features = y_true._keras_mask.meta_features
+                anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
+                anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
 
             def sixth_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
@@ -117,7 +153,13 @@ class LSTMModel:
                 entropy_pen = entropy_reg(y_pred)
                 jac = jaccard_loss(y_true, y_pred)
                 dup_pen = duplicate_penalty(y_pred)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen
+                div_pen = diversity_penalty(y_pred)
+                meta_features = None
+                if hasattr(y_true, '_keras_mask') and hasattr(y_true._keras_mask, 'meta_features'):
+                    meta_features = y_true._keras_mask.meta_features
+                anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
+                anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
 
             model.compile(
                 optimizer=optimizer,
@@ -173,7 +215,17 @@ class LSTMModel:
                 'sixth': 'accuracy'
             }
         )
-        print("\nStarting model training...")
-        model.fit(X_train_reshaped, {'first_five': y_train[0], 'sixth': y_train[1]}, epochs=20, batch_size=32, verbose=1)
-        print("Model training complete.")
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("\nStarting model training...")
+        callback = LSTMModel.LoggingCallback(logger)
+        model.fit(
+            X_train_reshaped,
+            {'first_five': y_train[0], 'sixth': y_train[1]},
+            epochs=20,
+            batch_size=32,
+            verbose=0,
+            callbacks=[callback]
+        )
+        logger.info("Model training complete.")
         return model

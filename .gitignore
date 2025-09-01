@@ -71,6 +71,7 @@ hypertune_dir/
 # Logs
 *.log
 logs/
+*.rtf
 
 # OS files
 .DS_Store

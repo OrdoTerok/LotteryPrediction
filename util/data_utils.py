@@ -7,18 +7,20 @@ def analyze_value_ranges_per_ball(df):
     """
     winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
     balls = list(zip(*winning_numbers))
+    import logging
+    logger = logging.getLogger(__name__)
     for i in range(5):
         ball_vals = np.array(balls[i])
-        print(f"\nBall {i+1}:")
-        print(f"  Min: {ball_vals.min()}, Max: {ball_vals.max()}")
-        print(f"  25th percentile: {np.percentile(ball_vals, 25):.1f}, 75th percentile: {np.percentile(ball_vals, 75):.1f}")
+        logger.info(f"\nBall {i+1}:")
+        logger.info(f"  Min: {ball_vals.min()}, Max: {ball_vals.max()}")
+        logger.info(f"  25th percentile: {np.percentile(ball_vals, 25):.1f}, 75th percentile: {np.percentile(ball_vals, 75):.1f}")
         vc = pd.Series(ball_vals).value_counts().sort_index()
         top = vc.sort_values(ascending=False).head(10)
-        print(f"  Top 10 most frequent numbers: {list(top.index)} (counts: {list(top.values)})")
+        logger.info(f"  Top 10 most frequent numbers: {list(top.index)} (counts: {list(top.values)})")
     ball_vals = np.array(balls[5])
-    print(f"\nPowerball (6th Ball):")
-    print(f"  Min: {ball_vals.min()}, Max: {ball_vals.max()}")
-    print(f"  25th percentile: {np.percentile(ball_vals, 25):.1f}, 75th percentile: {np.percentile(ball_vals, 75):.1f}")
+    logger.info(f"\nPowerball (6th Ball):")
+    logger.info(f"  Min: {ball_vals.min()}, Max: {ball_vals.max()}")
+    logger.info(f"  25th percentile: {np.percentile(ball_vals, 25):.1f}, 75th percentile: {np.percentile(ball_vals, 75):.1f}")
     vc = pd.Series(ball_vals).value_counts().sort_index()
     top = vc.sort_values(ascending=False).head(10)
-    print(f"  Top 10 most frequent numbers: {list(top.index)} (counts: {list(top.values)})")
+    logger.info(f"  Top 10 most frequent numbers: {list(top.index)} (counts: {list(top.values)})")

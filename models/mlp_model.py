@@ -3,7 +3,7 @@ import numpy as np
 
 class MLPModel:
     @staticmethod
-    def build_mlp_model(input_shape, num_first=5, num_first_classes=69, num_sixth_classes=26, hidden_units=128, dropout_rate=0.2):
+    def build_mlp_model(input_shape, num_first=5, num_first_classes=69, num_sixth_classes=26, hidden_units=64, dropout_rate=0.5):
         """
         Builds and compiles a simple dense MLP model for lottery prediction.
         Args:
@@ -17,11 +17,14 @@ class MLPModel:
             Compiled Keras model
         """
         inputs = tf.keras.Input(shape=input_shape)
-        x = tf.keras.layers.Flatten()(inputs)
-        x = tf.keras.layers.Dense(hidden_units, activation='relu')(x)
-        x = tf.keras.layers.Dropout(dropout_rate)(x)
-        x = tf.keras.layers.Dense(hidden_units, activation='relu')(x)
-        x = tf.keras.layers.Dropout(dropout_rate)(x)
+        x = tf.keras.layers.GaussianNoise(0.5)(inputs)
+        x = tf.keras.layers.Flatten()(x)
+        def diversity_penalty(y_pred):
+            pred_idx = tf.argmax(y_pred, axis=-1)
+            unique, _, count = tf.unique_with_counts(tf.reshape(pred_idx, [-1]))
+            penalty = tf.reduce_sum(tf.cast(count > 1, tf.float32) * (tf.cast(count, tf.float32) - 1)) / tf.cast(tf.size(pred_idx), tf.float32)
+            return penalty
+
         first_five_dense = tf.keras.layers.Dense(num_first * num_first_classes)(x)
         first_five_reshaped = tf.keras.layers.Reshape((num_first, num_first_classes))(first_five_dense)
         first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
@@ -29,7 +32,6 @@ class MLPModel:
         sixth_reshaped = tf.keras.layers.Reshape((1, num_sixth_classes))(sixth_dense)
         sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
         model = tf.keras.Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
-        # Optionally use custom loss with overcount penalty
         import config
         use_custom_loss = getattr(config, 'MLP_USE_CUSTOM_LOSS', False)
         penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
@@ -37,15 +39,18 @@ class MLPModel:
         import tensorflow.keras.backend as K
         jaccard_weight = getattr(config, 'JACCARD_LOSS_WEIGHT', 0.0)
         duplicate_penalty_weight = getattr(config, 'DUPLICATE_PENALTY_WEIGHT', 0.0)
+
         def overcount_penalty(y_true, y_pred):
             true_counts = tf.reduce_sum(y_true, axis=1)
             pred_counts = tf.reduce_sum(y_pred, axis=1)
             excess = tf.nn.relu(pred_counts - true_counts)
             penalty = tf.reduce_mean(tf.reduce_sum(tf.square(excess), axis=-1))
             return penalty
+
         def entropy_reg(y_pred):
             ent = -K.sum(y_pred * K.log(y_pred + 1e-8), axis=-1)
-            return -K.mean(ent)
+            return K.mean(ent)
+
         def jaccard_loss(y_true, y_pred):
             y_true_bin = tf.cast(y_true > 0, tf.float32)
             y_pred_bin = tf.cast(y_pred == tf.reduce_max(y_pred, axis=-1, keepdims=True), tf.float32)
@@ -53,13 +58,29 @@ class MLPModel:
             union = tf.reduce_sum(tf.cast((y_true_bin + y_pred_bin) > 0, tf.float32), axis=[1,2])
             jaccard = 1.0 - intersection / (union + 1e-8)
             return tf.reduce_mean(jaccard)
+
         def duplicate_penalty(y_pred):
+            # Avoid division by zero for single-ball predictions (e.g., sixth ball)
+            if y_pred.shape[1] < 2:
+                return 0.0
             pred_idx = tf.argmax(y_pred, axis=-1)
             penalty = 0.0
             for i in range(y_pred.shape[1]):
                 for j in range(i+1, y_pred.shape[1]):
                     penalty += tf.reduce_mean(tf.cast(tf.equal(pred_idx[:, i], pred_idx[:, j]), tf.float32))
             return penalty / (y_pred.shape[1] * (y_pred.shape[1] - 1) / 2)
+
+
+        def anti_copying_penalty(y_pred, meta_features=None):
+            # meta_features: (batch, balls) or None
+            # y_pred: (batch, balls, classes)
+            if meta_features is None:
+                return 0.0
+            pred_idx = tf.argmax(y_pred, axis=-1)  # (batch, balls)
+            meta_features = tf.cast(meta_features, tf.int64)
+            penalty = tf.reduce_mean(tf.cast(tf.equal(pred_idx, meta_features), tf.float32))
+            return penalty
+
         def first_five_loss(y_true, y_pred):
             ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
             ce = tf.reduce_mean(ce)
@@ -67,7 +88,15 @@ class MLPModel:
             entropy_pen = entropy_reg(y_pred)
             jac = jaccard_loss(y_true, y_pred)
             dup_pen = duplicate_penalty(y_pred)
-            return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen
+            div_pen = diversity_penalty(y_pred)
+            # Extract meta-features from y_true if present (assume last channel is meta, or pass externally)
+            meta_features = None
+            if hasattr(y_true, '_keras_mask') and hasattr(y_true._keras_mask, 'meta_features'):
+                meta_features = y_true._keras_mask.meta_features
+            anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
+            anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
+            return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+
         def sixth_loss(y_true, y_pred):
             ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
             ce = tf.reduce_mean(ce)
@@ -75,7 +104,14 @@ class MLPModel:
             entropy_pen = entropy_reg(y_pred)
             jac = jaccard_loss(y_true, y_pred)
             dup_pen = duplicate_penalty(y_pred)
-            return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen
+            div_pen = diversity_penalty(y_pred)
+            meta_features = None
+            if hasattr(y_true, '_keras_mask') and hasattr(y_true._keras_mask, 'meta_features'):
+                meta_features = y_true._keras_mask.meta_features
+            anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
+            anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
+            return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+
         if use_custom_loss:
             model.compile(
                 optimizer=tf.keras.optimizers.Adam(),
@@ -101,3 +137,4 @@ class MLPModel:
                 }
             )
         return model
+

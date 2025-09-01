@@ -4,7 +4,10 @@ import requests
 import os
 from typing import Tuple
 
+import datetime
+
 class DataHandler:
+    @staticmethod
     def fetch_data_from_datagov(api_url):
         """
         Fetches Powerball data from the Data.gov API.
@@ -36,7 +39,73 @@ class DataHandler:
             return pd.DataFrame()
 
 
+    @staticmethod
     def load_data_from_kaggle(file_path):
+        """
+        Loads Powerball data from a local Kaggle CSV file.
+        Args:
+            file_path (str): The path to the Kaggle CSV file.
+        Returns:
+            pd.DataFrame: A DataFrame containing the loaded data, or an empty
+                          DataFrame if the file is not found.
+        """
+        print(f"Attempting to load data from local file: {file_path}")
+        if not os.path.exists(file_path):
+            print(f"Error: The file '{file_path}' was not found.")
+            print("Please download the CSV from Kaggle and place it in the same directory.")
+            return pd.DataFrame()
+        try:
+            df = pd.read_csv(file_path)
+            # Select and rename columns to a consistent format.
+            if not df.empty:
+                df = df[['Date', 'Winning Numbers', 'Powerball']]
+                df.rename(columns={'Date': 'Draw Date'}, inplace=True)
+                # Ensure consistent column naming after rename
+                df.columns = ['Draw Date', 'Winning Numbers', 'Powerball']
+                print("Successfully loaded and processed Kaggle data.")
+            return df
+        except Exception as e:
+            print(f"Error reading the CSV file: {e}")
+            return pd.DataFrame()
+
+    @staticmethod
+    def get_powerball_data(api_url, csv_path):
+        """
+        Only download from data.gov the day after a draw (Thursday or Sunday). Otherwise, use the saved CSV.
+        """
+        today = datetime.datetime.now().date()
+        weekday = today.weekday()  # Monday=0, Sunday=6
+        # Powerball draws: Wednesday (2) and Saturday (5)
+        # Download on Thursday (3) or Sunday (6)
+        download_today = (weekday == 3) or (weekday == 6)
+        if download_today:
+            print("Today is the day after a Powerball draw. Downloading fresh data from Data.gov...")
+            df = DataHandler.fetch_data_from_datagov(api_url)
+            # Optionally, save to CSV for future use
+            if not df.empty:
+                df.to_csv(csv_path, index=False)
+            return df
+        else:
+            print("Not the day after a draw. Using saved data from CSV.")
+            return DataHandler.load_data_from_kaggle(csv_path)
+        """
+        Only download from data.gov the day after a draw (Thursday or Sunday). Otherwise, use the saved CSV.
+        """
+        today = datetime.datetime.now().date()
+        weekday = today.weekday()  # Monday=0, Sunday=6
+        # Powerball draws: Wednesday (2) and Saturday (5)
+        # Download on Thursday (3) or Sunday (6)
+        download_today = (weekday == 3) or (weekday == 6)
+        if download_today:
+            print("Today is the day after a Powerball draw. Downloading fresh data from Data.gov...")
+            df = DataHandler.fetch_data_from_datagov(api_url)
+            # Optionally, save to CSV for future use
+            if not df.empty:
+                df.to_csv(csv_path, index=False)
+            return df
+        else:
+            print("Not the day after a draw. Using saved data from CSV.")
+            return DataHandler.load_data_from_kaggle(csv_path)
         """
         Loads Powerball data from a local Kaggle CSV file.
 
@@ -107,11 +176,13 @@ class DataHandler:
             df (pandas.DataFrame): The DataFrame to save.
             file_path (str): The path where the Parquet file will be saved.
         """
+        import logging
+        logger = logging.getLogger(__name__)
         try:
             df.to_csv("data_sets/base_dataset.csv", index=False)
-            print(f"DataFrame successfully saved to data_sets/base_dataset.csv")
+            logger.info(f"DataFrame successfully saved to data_sets/base_dataset.csv")
         except Exception as e:
-            print(f"Error saving DataFrame to CSV: {e}")
+            logger.error(f"Error saving DataFrame to CSV: {e}")
 
     def split_dataframe_by_percentage(
         df: pd.DataFrame,

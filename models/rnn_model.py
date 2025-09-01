@@ -22,14 +22,14 @@ class RNNModel:
             optimizer_choice = optimizer
 
         inputs = layers.Input(shape=input_shape)
-        x = inputs
+        x = layers.GaussianNoise(0.5)(inputs)
         for i in range(num_layers):
             rnn_layer = layers.SimpleRNN(units, return_sequences=(i < num_layers - 1))
             if use_bidirectional:
                 x = layers.Bidirectional(rnn_layer)(x)
             else:
-                if dropout > 0:
-                    x = layers.Dropout(dropout)(x)
+                x = rnn_layer(x)
+            x = layers.Dropout(max(dropout, 0.5))(x)
         first_five_dense = layers.Dense(5 * 69)(x)
         first_five_softmax = layers.Reshape((5, 69))(first_five_dense)
         first_five_softmax = layers.Softmax(axis=-1, name='first_five')(first_five_softmax)
@@ -46,35 +46,81 @@ class RNNModel:
 
         if use_custom_loss:
             import config
-            import tensorflow.keras.backend as K
+            from tensorflow.keras import backend as K
             penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
             entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)
+            jaccard_weight = getattr(config, 'JACCARD_LOSS_WEIGHT', 0.0)
+            duplicate_penalty_weight = getattr(config, 'DUPLICATE_PENALTY_WEIGHT', 0.0)
 
             def overcount_penalty(y_true, y_pred):
-                # Per-sample, per-class penalty, normalized
-                true_counts = tf.reduce_sum(y_true, axis=1)  # (batch, classes)
+                true_counts = tf.reduce_sum(y_true, axis=1)
                 pred_counts = tf.reduce_sum(y_pred, axis=1)
                 excess = tf.nn.relu(pred_counts - true_counts)
-                penalty = tf.reduce_mean(tf.reduce_sum(tf.square(excess), axis=-1))  # mean over batch
+                penalty = tf.reduce_mean(tf.reduce_sum(tf.square(excess), axis=-1))
                 return penalty
 
             def entropy_reg(y_pred):
                 ent = -K.sum(y_pred * K.log(y_pred + 1e-8), axis=-1)
-                return -K.mean(ent)
+                return K.mean(ent)
+
+            def jaccard_loss(y_true, y_pred):
+                intersection = K.sum(K.minimum(y_true, y_pred), axis=-1)
+                union = K.sum(K.maximum(y_true, y_pred), axis=-1)
+                return 1.0 - K.mean(intersection / (union + 1e-8))
+
+            def duplicate_penalty(y_pred):
+                # Avoid division by zero for single-ball predictions (e.g., sixth ball)
+                if y_pred.shape[1] < 2:
+                    return 0.0
+                pred_idx = tf.argmax(y_pred, axis=-1)
+                unique, _, count = tf.unique_with_counts(tf.reshape(pred_idx, [-1]))
+                penalty = tf.reduce_sum(tf.cast(count > 1, tf.float32) * (tf.cast(count, tf.float32) - 1)) / tf.cast(tf.size(pred_idx), tf.float32)
+                return penalty
+
+            def diversity_penalty(y_pred):
+                pred_idx = tf.argmax(y_pred, axis=-1)
+                unique, _, count = tf.unique_with_counts(tf.reshape(pred_idx, [-1]))
+                penalty = tf.reduce_sum(tf.cast(count > 1, tf.float32) * (tf.cast(count, tf.float32) - 1)) / tf.cast(tf.size(pred_idx), tf.float32)
+                return penalty
+
+
+            def anti_copying_penalty(y_pred, meta_features=None):
+                if meta_features is None:
+                    return 0.0
+                pred_idx = tf.argmax(y_pred, axis=-1)
+                meta_features = tf.cast(meta_features, tf.int64)
+                penalty = tf.reduce_mean(tf.cast(tf.equal(pred_idx, meta_features), tf.float32))
+                return penalty
 
             def first_five_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
                 ce = tf.reduce_mean(ce)
                 penalty = overcount_penalty(y_true, y_pred)
                 entropy_pen = entropy_reg(y_pred)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
+                jac = jaccard_loss(y_true, y_pred)
+                dup_pen = duplicate_penalty(y_pred)
+                div_pen = diversity_penalty(y_pred)
+                meta_features = None
+                if hasattr(y_true, '_keras_mask') and hasattr(y_true._keras_mask, 'meta_features'):
+                    meta_features = y_true._keras_mask.meta_features
+                anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
+                anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
 
             def sixth_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
                 ce = tf.reduce_mean(ce)
                 penalty = overcount_penalty(y_true, y_pred)
                 entropy_pen = entropy_reg(y_pred)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen
+                jac = jaccard_loss(y_true, y_pred)
+                dup_pen = duplicate_penalty(y_pred)
+                div_pen = diversity_penalty(y_pred)
+                meta_features = None
+                if hasattr(y_true, '_keras_mask') and hasattr(y_true._keras_mask, 'meta_features'):
+                    meta_features = y_true._keras_mask.meta_features
+                anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
+                anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
+                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
 
             model.compile(
                 optimizer=opt,

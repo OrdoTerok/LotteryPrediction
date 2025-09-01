@@ -1,3 +1,13 @@
+import logging
+# Remove or comment out the following block to avoid overwriting the main log file
+# logging.basicConfig(
+#     filename='log.rtf',
+#     filemode='a',
+#     format='%(asctime)s %(levelname)s: %(message)s',
+#     level=logging.INFO
+# )
+logger = logging.getLogger(__name__)
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -14,11 +24,11 @@ def plot_multi_round_true_std(y_true, rounds_pred_list, prev_pred=None, num_ball
     """
     stds = []
     labels = []
-    print("[PLOT DIAG] plot_multi_round_true_std y_true (first 5):", y_true[:5])
+    logger.info("[PLOT DIAG] plot_multi_round_true_std y_true (first 5): %s", y_true[:5])
     if prev_pred is not None:
-        print("[PLOT DIAG] plot_multi_round_true_std prev_pred (first 5):", prev_pred[:5])
+        logger.info("[PLOT DIAG] plot_multi_round_true_std prev_pred (first 5): %s", prev_pred[:5])
     for idx, y_pred in enumerate(rounds_pred_list):
-        print(f"[PLOT DIAG] plot_multi_round_true_std round {idx+1} y_pred (first 5):", y_pred[:5])
+        logger.info(f"[PLOT DIAG] plot_multi_round_true_std round {idx+1} y_pred (first 5): %s", y_pred[:5])
     true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
     stds.append(true_stds)
     labels.append('True')
@@ -26,13 +36,24 @@ def plot_multi_round_true_std(y_true, rounds_pred_list, prev_pred=None, num_ball
         prev_stds = [np.std(prev_pred[:, i]) for i in range(num_balls)]
         stds.append(prev_stds)
         labels.append(prev_label)
+    # Ensure unique labels
+    used_labels = set(labels)
+    def make_unique(label):
+        orig = label
+        count = 2
+        while label in used_labels:
+            label = f"{orig} ({count})"
+            count += 1
+        used_labels.add(label)
+        return label
     for idx, y_pred in enumerate(rounds_pred_list):
         round_stds = [np.std(y_pred[:, i]) for i in range(num_balls)]
         stds.append(round_stds)
         if round_labels and idx < len(round_labels):
-            labels.append(round_labels[idx])
+            label = round_labels[idx]
         else:
-            labels.append(f'Round {idx+1}')
+            label = f'Round {idx+1}'
+        labels.append(make_unique(label))
     stds = np.array(stds)
     plt.figure(figsize=(10, 6))
     for i in range(stds.shape[1]):
@@ -50,11 +71,11 @@ def plot_multi_round_pred_std(y_true, rounds_pred_list, prev_pred=None, num_ball
     """
     stds = []
     labels = []
-    print("[PLOT DIAG] plot_multi_round_pred_std y_true (first 5):", y_true[:5])
+    logger.info("[PLOT DIAG] plot_multi_round_pred_std y_true (first 5): %s", y_true[:5])
     if prev_pred is not None:
-        print("[PLOT DIAG] plot_multi_round_pred_std prev_pred (first 5):", prev_pred[:5])
+        logger.info("[PLOT DIAG] plot_multi_round_pred_std prev_pred (first 5): %s", prev_pred[:5])
     for idx, y_pred in enumerate(rounds_pred_list):
-        print(f"[PLOT DIAG] plot_multi_round_pred_std round {idx+1} y_pred (first 5):", y_pred[:5])
+        logger.info(f"[PLOT DIAG] plot_multi_round_pred_std round {idx+1} y_pred (first 5): %s", y_pred[:5])
     true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
     stds.append(true_stds)
     labels.append('True')
@@ -62,13 +83,24 @@ def plot_multi_round_pred_std(y_true, rounds_pred_list, prev_pred=None, num_ball
         prev_stds = [np.std(prev_pred[:, i]) for i in range(num_balls)]
         stds.append(prev_stds)
         labels.append(prev_label)
+    # Ensure unique labels
+    used_labels = set(labels)
+    def make_unique(label):
+        orig = label
+        count = 2
+        while label in used_labels:
+            label = f"{orig} ({count})"
+            count += 1
+        used_labels.add(label)
+        return label
     for idx, y_pred in enumerate(rounds_pred_list):
         round_stds = [np.std(y_pred[:, i]) for i in range(num_balls)]
         stds.append(round_stds)
         if round_labels and idx < len(round_labels):
-            labels.append(round_labels[idx])
+            label = round_labels[idx]
         else:
-            labels.append(f'Round {idx+1}')
+            label = f'Round {idx+1}'
+        labels.append(make_unique(label))
     stds = np.array(stds)
     plt.figure(figsize=(10, 6))
     for i in range(stds.shape[1]):
@@ -106,17 +138,28 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
         prev_kls = [kl_divergence(true_dists[i], get_dist(prev_pred, i)) for i in range(num_balls)]
         kls.append(prev_kls)
         labels.append(prev_label)
-    print("[PLOT DIAG] plot_multi_round_kl_divergence y_true (first 5):", y_true[:5])
+    logger.info("[PLOT DIAG] plot_multi_round_kl_divergence y_true (first 5): %s", y_true[:5])
     if prev_pred is not None:
-        print("[PLOT DIAG] plot_multi_round_kl_divergence prev_pred (first 5):", prev_pred[:5])
+        logger.info("[PLOT DIAG] plot_multi_round_kl_divergence prev_pred (first 5): %s", prev_pred[:5])
+    # Ensure unique labels
+    used_labels = set(labels)
+    def make_unique(label):
+        orig = label
+        count = 2
+        while label in used_labels:
+            label = f"{orig} ({count})"
+            count += 1
+        used_labels.add(label)
+        return label
     for idx, y_pred in enumerate(rounds_pred_list):
-        print(f"[PLOT DIAG] plot_multi_round_kl_divergence round {idx+1} y_pred (first 5):", y_pred[:5])
+        logger.info(f"[PLOT DIAG] plot_multi_round_kl_divergence round {idx+1} y_pred (first 5): %s", y_pred[:5])
         kl = [kl_divergence(y_true[:, i], y_pred[:, i], n_classes) for i in range(num_balls)]
         kls.append(kl)
         if round_labels and idx < len(round_labels):
-            labels.append(round_labels[idx])
+            label = round_labels[idx]
         else:
-            labels.append(f'Round {idx+1}')
+            label = f'Round {idx+1}'
+        labels.append(make_unique(label))
     kls = np.array(kls)
     plt.figure(figsize=(10, 6))
     for i in range(kls.shape[1]):
