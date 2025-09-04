@@ -25,16 +25,18 @@ def plot_multi_round_powerball_distribution(y_true, rounds_pred_list, prev_pred=
     logger.info("[PLOT DIAG] y_true (first 5): %s", y_true[:5])
     if prev_pred is not None:
         logger.info("[PLOT DIAG] prev_pred (first 5): %s", prev_pred[:5])
+    # Vectorized: precompute bincounts for all rounds
     for idx, y_pred in enumerate(rounds_pred_list):
         logger.info(f"[PLOT DIAG] round {idx+1} y_pred (first 5): %s", y_pred[:5])
     true_counts = np.bincount(y_true[:, 0] - 1, minlength=n_classes)
     plt.bar(x + offsets[0], true_counts, width=width, color='blue', label='True', align='center')
     idx_offset = 1
     if prev_pred is not None:
-        prev_counts = np.bincount(prev_pred[:, 0] - 1, minlength=n_classes)
+        prev_counts = np.bincount(prev_pred[:, 0].astype(int) - 1, minlength=n_classes)
         plt.bar(x + offsets[1], prev_counts, width=width, color='black', label=prev_label, align='center')
         idx_offset += 1
-    # Ensure unique labels
+    # Vectorized bincounts for all rounds
+    round_counts_arr = np.stack([np.bincount(y_pred[:, 0] - 1, minlength=n_classes) for y_pred in rounds_pred_list], axis=0)
     used_labels = set()
     def make_unique(label):
         orig = label
@@ -44,12 +46,11 @@ def plot_multi_round_powerball_distribution(y_true, rounds_pred_list, prev_pred=
             count += 1
         used_labels.add(label)
         return label
-    for idx, y_pred in enumerate(rounds_pred_list):
+    for idx in range(round_counts_arr.shape[0]):
         label = round_labels[idx] if round_labels and idx < len(round_labels) else f'Round {idx+1}'
         label = make_unique(label)
         color = palette((idx + 2) % 10)
-        round_counts = np.bincount(y_pred[:, 0] - 1, minlength=n_classes)
-        plt.bar(x + offsets[idx + idx_offset], round_counts, width=width, color=color, label=label, align='center')
+        plt.bar(x + offsets[idx + idx_offset], round_counts_arr[idx], width=width, color=color, label=label, align='center')
     plt.title(title)
     plt.xlabel('Number')
     plt.ylabel('Count')
@@ -86,10 +87,11 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
         plt.bar(x + offsets[0], true_counts, width=width, color='blue', label='True', align='center')
         idx_offset = 1
         if prev_pred is not None:
-            prev_counts = np.bincount(prev_pred[:, i] - 1, minlength=n_classes)
+            prev_counts = np.bincount(prev_pred[:, i].astype(int) - 1, minlength=n_classes)
             plt.bar(x + offsets[1], prev_counts, width=width, color='black', label=prev_label, align='center')
             idx_offset += 1
-        # Ensure unique labels per plot
+        # Vectorized bincounts for all rounds for this ball
+        round_counts_arr = np.stack([np.bincount(y_pred[:, i] - 1, minlength=n_classes) for y_pred in rounds_pred_list], axis=0)
         used_labels = set()
         def make_unique(label):
             orig = label
@@ -99,12 +101,11 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
                 count += 1
             used_labels.add(label)
             return label
-        for idx, y_pred in enumerate(rounds_pred_list):
+        for idx in range(round_counts_arr.shape[0]):
             label = round_labels[idx] if round_labels and idx < len(round_labels) else f'Round {idx+1}'
             label = make_unique(label)
             color = palette((idx + 2) % 10)
-            round_counts = np.bincount(y_pred[:, i] - 1, minlength=n_classes)
-            plt.bar(x + offsets[idx + idx_offset], round_counts, width=width, color=color, label=label, align='center')
+            plt.bar(x + offsets[idx + idx_offset], round_counts_arr[idx], width=width, color=color, label=label, align='center')
         plt.title(f'{title_prefix} {i+1} Distribution (1-{n_classes})')
         plt.xlabel('Number')
         plt.ylabel('Count')

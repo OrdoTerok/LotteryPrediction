@@ -37,9 +37,9 @@ class IsotonicCalibrator:
             ir_i.fit(probs[:, i], (labels == i).astype(int))
             self.ir.append(ir_i)
     def transform(self, probs):
-        calibrated = np.zeros_like(probs)
-        for i, ir_i in enumerate(self.ir):
-            calibrated[:, i] = ir_i.transform(probs[:, i])
+        # Vectorized transformation using list comprehension and np.stack
+        calibrated_cols = [ir_i.transform(probs[:, i]) for i, ir_i in enumerate(self.ir)]
+        calibrated = np.stack(calibrated_cols, axis=1)
         # Renormalize
         calibrated /= calibrated.sum(axis=1, keepdims=True)
         return calibrated

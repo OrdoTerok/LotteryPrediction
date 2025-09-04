@@ -1,3 +1,4 @@
+_PSO_RUNNING = False
 
 def check_constraints(var_names, position):
 	"""
@@ -117,30 +118,55 @@ def fitness_func(train_df, test_df):
 	if not is_data_valid(train_df, test_df):
 		logger.warning("[PSO] Data invalid: empty or contains NaN.")
 		return 1e6  # Large penalty for invalid data
-	# Reload config to ensure PSO changes are picked up
-	import importlib
-	importlib.reload(config)
-	from util import model_utils
-	# Log current config values for debugging
-	logger.debug(f"[PSO][DEBUG] Current config values: {[getattr(config, k, None) for k in dir(config) if not k.startswith('__')]}")
+
 	try:
-		fitness = model_utils.run_pipeline(config)
-		if fitness is None or np.isnan(fitness) or np.isinf(fitness):
-			import traceback
-			logger.debug(f"[PSO][DEBUG] Invalid fitness value returned: {fitness}")
-			logger.debug("[PSO][DEBUG] Traceback for invalid fitness:")
-			traceback.print_stack()
-			logger.debug(f"[PSO][DEBUG] Config values at invalid fitness: {[getattr(config, k, None) for k in dir(config) if not k.startswith('__')]}")
-			return 1e6  # Large penalty for invalid fitness
-		return fitness
+		# Prepare data for LSTM
+		from data.preprocessing import prepare_data_for_lstm
+		import config
+		look_back_window = getattr(config, 'LOOK_BACK_WINDOW', 10)
+		X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+		X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window)
+		if X_train.size == 0 or X_test.size == 0:
+			logger.warning("[PSO] Not enough data to create train/test sequences.")
+			return 1e6
+
+		# Select model type (from config or default)
+		model_type = getattr(config, 'MODEL_TYPE', 'lstm')
+		from models.model_factory import get_model
+		input_shape = X_train.shape[1:]
+		# Instantiate model
+		model = get_model(model_type, input_shape=input_shape)
+
+		# Train model
+		from util.model_utils import train_model
+		train_model(model, X_train, y_train, epochs=3, batch_size=32, validation_split=0.1, verbose=0)
+
+		# Evaluate model on test set
+		eval_result = model.evaluate(X_test, y_test, verbose=0)
+		# eval_result can be a list: [total_loss, first_five_loss, sixth_loss, ...]
+		if isinstance(eval_result, (list, tuple)):
+			total_loss = float(eval_result[0])
+		else:
+			total_loss = float(eval_result)
+
+		if np.isnan(total_loss) or np.isinf(total_loss):
+			logger.warning(f"[PSO] Invalid loss value: {total_loss}")
+			return 1e6
+		return total_loss
 	except Exception as e:
 		import traceback
 		logger.error(f"[PSO] Fitness error: {e}")
 		traceback.print_exc()
-		logger.debug(f"[PSO][DEBUG] Config values at error: {[getattr(config, k, None) for k in dir(config) if not k.startswith('__')]}")
 		return 1e6  # Large penalty for error
 
-def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=10):
+def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=10, cv=None):
+	global _PSO_RUNNING
+	if _PSO_RUNNING:
+		logger.warning('[PSO][GUARD] Recursive call to particle_swarm_optimize detected! Aborting this call.')
+		return None
+	_PSO_RUNNING = True
+	logger.info('[PSO][GUARD] Entered particle_swarm_optimize')
+	# Ensure logger works in multiprocessing/threading
 	# Full PSO implementation
 	# Expect final_df to be a tuple: (train_df, test_df)
 	train_df, test_df = final_df
@@ -148,29 +174,95 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 	global_best_position = None
 	global_best_fitness = float('inf')
 
+	# Determine cv folds
+	if cv is None:
+		import config
+		cv = getattr(config, 'CV_FOLDS', 1)
+
+	def fitness_func_cv(train_df, test_df):
+		try:
+			from data.preprocessing import prepare_data_for_lstm
+			import config
+			look_back_window = getattr(config, 'LOOK_BACK_WINDOW', 10)
+			X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+			model_type = getattr(config, 'MODEL_TYPE', 'lstm')
+			from models.model_factory import get_model
+			input_shape = X_train.shape[1:]
+			model = get_model(model_type, input_shape=input_shape)
+			cv_results = model.cross_validate(X_train, y_train, cv=cv)
+			if isinstance(cv_results[0], (list, tuple, np.ndarray)):
+				total_loss = float(np.mean([r[0] for r in cv_results]))
+			else:
+				total_loss = float(np.mean(cv_results))
+			if np.isnan(total_loss) or np.isinf(total_loss):
+				logger.warning(f"[PSO] Invalid loss value: {total_loss}")
+				return 1e6
+			return total_loss
+		except Exception as e:
+			import traceback
+			logger.error(f"[PSO] Fitness error: {e}")
+			traceback.print_exc()
+			return 1e6
+
+	def fitness_func_default(train_df, test_df):
+		try:
+			from data.preprocessing import prepare_data_for_lstm
+			import config
+			look_back_window = getattr(config, 'LOOK_BACK_WINDOW', 10)
+			X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+			X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window)
+			if X_train.size == 0 or X_test.size == 0:
+				logger.warning("[PSO] Not enough data to create train/test sequences.")
+				return 1e6
+			model_type = getattr(config, 'MODEL_TYPE', 'lstm')
+			from models.model_factory import get_model
+			input_shape = X_train.shape[1:]
+			model = get_model(model_type, input_shape=input_shape)
+			from util.model_utils import train_model
+			train_model(model, X_train, y_train, epochs=3, batch_size=32, validation_split=0.1, verbose=0)
+			eval_result = model.evaluate(X_test, y_test, verbose=0)
+			if isinstance(eval_result, (list, tuple)):
+				total_loss = float(eval_result[0])
+			else:
+				total_loss = float(eval_result)
+			if np.isnan(total_loss) or np.isinf(total_loss):
+				logger.warning(f"[PSO] Invalid loss value: {total_loss}")
+				return 1e6
+			return total_loss
+		except Exception as e:
+			import traceback
+			logger.error(f"[PSO] Fitness error: {e}")
+			traceback.print_exc()
+			return 1e6
+
+	fitness_func_to_use = fitness_func_cv if cv > 1 else fitness_func_default
+
 	from joblib import Parallel, delayed
 	for iter in range(n_iter):
 		logger.info(f"[PSO] Iteration {iter+1}/{n_iter}")
-		# Parallel fitness evaluation
-		fitnesses = Parallel(n_jobs=-1, backend="threading")(delayed(lambda p: p.evaluate(lambda: fitness_func(train_df, test_df)))(particle) for particle in particles)
+		try:
+			fitnesses = Parallel(n_jobs=-1, backend="threading")(delayed(lambda p: p.evaluate(lambda: fitness_func_to_use(train_df, test_df)))(particle) for particle in particles)
+		except Exception as e:
+			logger.error(f"[PSO] Exception during Parallel fitness evaluation: {e}")
+			import traceback
+			logger.error(traceback.format_exc())
+			raise
 		for idx, (particle, fitness) in enumerate(zip(particles, fitnesses)):
 			logger.info(f"[PSO] Particle {idx+1} fitness: {fitness:.6f}")
 			if fitness < global_best_fitness:
 				global_best_fitness = fitness
 				global_best_position = particle.position.copy()
-		# Update velocities and positions
 		for particle in particles:
-			# If global_best_position is None (first iteration), use particle.best_position
 			if global_best_position is None:
 				ref_position = particle.best_position
 			else:
 				ref_position = global_best_position
 			particle.update_velocity(ref_position)
 			particle.update_position(bounds)
+	_PSO_RUNNING = False
 	logger.info(f"[PSO] Best fitness: {global_best_fitness:.6f}")
 	logger.info(f"[PSO] Best position: {global_best_position}")
 	if global_best_position is None:
-		# Fallback: use the best position from the first particle
 		logger.warning("[PSO] Warning: No global best found, using first particle's best position.")
 		return list(particles[0].best_position)
 	return list(global_best_position)

@@ -1,31 +1,35 @@
+def cross_validate_model(model, X, y, cv=5, **kwargs):
+    """
+    Utility to perform cross-validation using a model's cross_validate method.
+    Returns list of per-fold evaluation results.
+    """
+    if hasattr(model, 'cross_validate'):
+        return model.cross_validate(X, y, cv=cv, **kwargs)
+    else:
+        raise NotImplementedError(f"Model {type(model)} does not support cross-validation.")
 
 # Standard library imports
 import os
 import json
 import hashlib
-import datetime
-import warnings
 
 # Third-party imports
 import numpy as np
-import pandas as pd
 import tensorflow as tf
-import keras_tuner as kt
-import scipy.special
-from scipy.stats import entropy
-from sklearn.linear_model import LogisticRegression
+try:
+    from tensorflow import mixed_precision
+    mixed_precision.set_global_policy('mixed_float16')
+except ImportError:
+    pass
 
 # Local imports
 import config
 from data.loaders import fetch_data_from_datagov, load_data_from_kaggle
 from data.preprocessing import combine_and_clean_data, save_to_file, prepare_data_for_lstm
 from data.split import split_dataframe_by_percentage
-from util.data_utils import analyze_value_ranges_per_ball
 from util.plot_utils import (
     plot_multi_round_ball_distributions,
-    plot_multi_round_powerball_distribution,
-    plot_ball_distributions,
-    plot_powerball_distribution
+    plot_multi_round_powerball_distribution
 )
 from util.plot_utils_std import (
     plot_multi_round_true_std,
@@ -33,11 +37,6 @@ from util.plot_utils_std import (
     plot_multi_round_kl_divergence
 )
 from util.experiment_tracker import ExperimentTracker
-from util.metrics import smooth_labels, mix_uniform, kl_to_uniform, kl_divergence
-from models.lstm_model import LSTMModel
-from models.rnn_model import RNNModel
-from models.mlp_model import MLPModel
-from models.lgbm_model import LightGBMModel
 
 
 def get_results_history(cache=None):
@@ -63,52 +62,48 @@ def get_results_history(cache=None):
     return history
 
 
-def run_pipeline(config):
+def run_pipeline(config, from_iterative_stacking=False, cv=None):
     """
     Orchestrates the full pipeline: data loading, meta-optimization, iterative stacking, evaluation, and plotting.
     """
     # Modular logging, experiment tracking, and cache are set up in main.py
     # Accept tracker and cache as arguments for modularity
     DATAGOV_API_URL = 'https://data.ny.gov/resource/d6yy-54nr.json'
-    from util.log_utils import get_logger, setup_logging
-    # Ensure logs directory exists
-    logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs')
-    logs_dir = os.path.abspath(logs_dir)
-    if not os.path.exists(logs_dir):
-        os.makedirs(logs_dir)
-    # Create a unique log file for each run
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_filename = os.path.join(logs_dir, f'log_{timestamp}.rtf')
-    setup_logging(log_filename)
+    from util.log_utils import get_logger
     logger = get_logger()
     from util.cache import Cache
     cache = Cache()
     tracker = ExperimentTracker()
-    logger.info("Starting the Powerball data download process...")
-    datagov_df = fetch_data_from_datagov(DATAGOV_API_URL)
-    kaggle_df = load_data_from_kaggle(config.KAGGLE_CSV_FILE)
-    tracker.start_run({k: getattr(config, k) for k in dir(config) if k.isupper()})
-    if not datagov_df.empty or not kaggle_df.empty:
-        logger.info("Successfully loaded the Powerball data into a DataFrame.")
-        logger.info(f"Data includes {kaggle_df.shape[0]} draws and has {kaggle_df.shape[1]} columns.")
-    final_df = combine_and_clean_data(datagov_df, kaggle_df)
-    save_to_file(final_df)
-    tracker.log_artifact('data_sets/base_dataset.csv', artifact_name='base_dataset.csv')
-    logger.info("--- Most Likely Value Ranges Per Ball (Full Dataset) ---")
-    analyze_value_ranges_per_ball(final_df)
+    # High-level log: pipeline data preparation and validation
+    # Cache key based on input file modification times
+    kaggle_path = config.KAGGLE_CSV_FILE
+    datagov_path = 'data_sets/datagov_cache.csv'
+    cache_key = f"combined_df_{os.path.getmtime(kaggle_path)}"
+    cached_df = cache.get(cache_key)
+    if not from_iterative_stacking:
+        tracker.start_run({k: getattr(config, k) for k in dir(config) if k.isupper()})
+    if cached_df is not None:
+        final_df = cached_df
+    else:
+        datagov_df = fetch_data_from_datagov(DATAGOV_API_URL)
+        kaggle_df = load_data_from_kaggle(kaggle_path)
+        final_df = combine_and_clean_data(datagov_df, kaggle_df)
+        cache.set(cache_key, final_df)
+        save_to_file(final_df)
+        if not from_iterative_stacking:
+            tracker.log_artifact('data_sets/base_dataset.csv', artifact_name='base_dataset.csv')
     train_df, test_df = split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
-    logger.info(f"Data split complete: {len(train_df)} training samples, {len(test_df)} testing samples.")
     look_back_window = config.LOOK_BACK_WINDOW
     X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window)
-    logger.info(f"Prepared testing data shape: {X_test.shape}")
     if X_test.size == 0:
         logger.error("Not enough data to create test sequences. Exiting.")
         tracker.end_run()
         return float('inf')
     y_true_first_five = np.argmax(y_test[0], axis=-1) + 1
     y_true_sixth = np.argmax(y_test[1], axis=-1) + 1
-    # ...existing code...
+    logger.info("[Pipeline] Running Meta Optimization")
     run_meta_optimization(final_df, config)
+    logger.info("[Pipeline] Meta Optimization complete.")
     prev_pred_first_five = None
     prev_pred_sixth = None
     history_path = os.path.join('data_sets', 'results_predictions_history.json')
@@ -118,71 +113,221 @@ def run_pipeline(config):
                 history = json.load(f)
             if isinstance(history, list) and len(history) > 0:
                 prev_results = history[-1]
-                prev_pred_first_five = np.array(prev_results.get('first_five_pred_numbers'))
-                prev_pred_sixth = np.array(prev_results.get('sixth_pred_number'))
+                prev_pred_first_five = np.array(prev_results.get('first_five_pred_numbers'), dtype=np.float32)
+                prev_pred_sixth = np.array(prev_results.get('sixth_pred_number'), dtype=np.float32)
         except Exception:
             pass
-    rounds_first_five, rounds_sixth, round_labels = run_iterative_stacking(
-        train_df, test_df, config, y_true_first_five, y_true_sixth,
-        prev_pred_first_five=prev_pred_first_five, prev_pred_sixth=prev_pred_sixth
+    from models.model_factory import get_model
+    models = []
+    X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+    # LSTM
+    # Ensure input_shape is always (timesteps, features) for LSTM
+    if X_train[0].ndim == 2:
+        input_shape = X_train[0].shape
+    elif X_train[0].ndim == 3:
+        input_shape = X_train[0].shape[1:]
+    else:
+        raise ValueError(f"Unexpected X_train[0] shape: {X_train[0].shape}")
+    lstm_model = get_model(
+        'lstm',
+        input_shape=input_shape,
+        hp=None,
+        use_custom_loss=True,
+        force_low_units=False,
+        force_simple=False,
+        units=getattr(config, 'LSTM_UNITS', 64),
+        dropout=getattr(config, 'LSTM_DROPOUT', 0.2),
+        learning_rate=getattr(config, 'LSTM_LEARNING_RATE', 1e-3),
+        label_smoothing=getattr(config, 'LABEL_SMOOTHING', 0.0),
+        temp_max=getattr(config, 'TEMP_MAX', 0.0)
     )
-    # Log predictions artifact
-    if os.path.exists(history_path):
-        tracker.log_artifact(history_path)
-    if rounds_first_five:
-        plot_multi_round_ball_distributions(
-            y_true=y_true_first_five,
-            rounds_pred_list=rounds_first_five,
-            prev_pred=prev_pred_first_five,
-            num_balls=5,
-            n_classes=69,
-            title_prefix='Ball',
-            round_labels=round_labels,
-            prev_label='Previous'
+    if cv is None:
+        cv = getattr(config, 'CV_FOLDS', 1)
+    if cv > 1:
+        logger.info(f"[Pipeline] Running cross-validation for LSTM (cv={cv})")
+        lstm_cv_results = cross_validate_model(lstm_model, X_train, {'first_five': y_train[0], 'sixth': y_train[1]}, cv=cv, epochs=3, batch_size=32, verbose=0)
+        logger.info(f"[Pipeline] LSTM CV results: {lstm_cv_results}")
+    else:
+        lstm_model.fit(
+            X_train,
+            {'first_five': y_train[0], 'sixth': y_train[1]},
+            epochs=3, batch_size=32, verbose=0
         )
-        tracker.log_artifact('multi_round_ball_distributions.png') if os.path.exists('multi_round_ball_distributions.png') else None
-    if rounds_sixth:
-        plot_multi_round_powerball_distribution(
-            y_true=y_true_sixth,
-            rounds_pred_list=rounds_sixth,
-            prev_pred=prev_pred_sixth,
-            n_classes=26,
-            title='Powerball (6th Ball) Distribution',
-            round_labels=round_labels,
-            prev_label='Previous'
+    models.append(lstm_model)
+    # RNN
+    # Ensure input_shape is always (timesteps, features) for RNN
+    if X_train[0].ndim == 2:
+        rnn_input_shape = X_train[0].shape
+    elif X_train[0].ndim == 3:
+        rnn_input_shape = X_train[0].shape[1:]
+    else:
+        raise ValueError(f"Unexpected X_train[0] shape: {X_train[0].shape}")
+    rnn_model = get_model(
+        'rnn',
+        input_shape=rnn_input_shape,
+        hp=None,
+        units=getattr(config, 'RNN_UNITS', 64),
+        dropout=getattr(config, 'RNN_DROPOUT', 0.2),
+        learning_rate=getattr(config, 'RNN_LEARNING_RATE', 1e-3),
+        label_smoothing=getattr(config, 'LABEL_SMOOTHING', 0.0),
+        temp_max=getattr(config, 'TEMP_MAX', 0.0)
+    )
+    if cv > 1:
+        logger.info(f"[Pipeline] Running cross-validation for RNN (cv={cv})")
+        rnn_cv_results = cross_validate_model(rnn_model, X_train, {'first_five': y_train[0], 'sixth': y_train[1]}, cv=cv, epochs=3, batch_size=32, verbose=0)
+        logger.info(f"[Pipeline] RNN CV results: {rnn_cv_results}")
+    else:
+        rnn_model.fit(
+            X_train,
+            {'first_five': y_train[0], 'sixth': y_train[1]},
+            epochs=3, batch_size=32, verbose=0
         )
-        tracker.log_artifact('multi_round_powerball_distribution.png') if os.path.exists('multi_round_powerball_distribution.png') else None
-        plot_multi_round_true_std(
-            y_true=y_true_first_five,
-            rounds_pred_list=rounds_first_five,
-            prev_pred=prev_pred_first_five,
-            num_balls=5,
-            round_labels=round_labels,
-            prev_label='Previous'
+    models.append(rnn_model)
+    # MLP
+    mlp_input_shape = (X_train.shape[1] * X_train.shape[2],)
+    mlp_model = get_model(
+        'mlp',
+        input_shape=mlp_input_shape,
+        hidden_units=getattr(config, 'MLP_HIDDEN_UNITS', 64),
+        dropout_rate=getattr(config, 'MLP_DROPOUT', 0.5),
+        learning_rate=getattr(config, 'MLP_LEARNING_RATE', 1e-3),
+        label_smoothing=getattr(config, 'LABEL_SMOOTHING', 0.0),
+        temp_max=getattr(config, 'TEMP_MAX', 0.0)
+    )
+    # Flatten X_train for MLP: (batch, timesteps, features) -> (batch, timesteps * features)
+    X_train_mlp = X_train.reshape(X_train.shape[0], -1)
+    if cv > 1:
+        logger.info(f"[Pipeline] Running cross-validation for MLP (cv={cv})")
+        mlp_cv_results = cross_validate_model(mlp_model, X_train_mlp, {'first_five': y_train[0], 'sixth': y_train[1]}, cv=cv, epochs=3, batch_size=32, verbose=0)
+        logger.info(f"[Pipeline] MLP CV results: {mlp_cv_results}")
+    else:
+        mlp_model.fit(
+            X_train_mlp,
+            {'first_five': y_train[0], 'sixth': y_train[1]},
+            epochs=3, batch_size=32, verbose=0
         )
-        tracker.log_artifact('multi_round_true_std.png') if os.path.exists('multi_round_true_std.png') else None
-        plot_multi_round_pred_std(
-            y_true=y_true_first_five,
-            rounds_pred_list=rounds_first_five,
-            prev_pred=prev_pred_first_five,
-            num_balls=5,
-            round_labels=round_labels,
-            prev_label='Previous'
+    models.append(mlp_model)
+    # LightGBM
+    lgbm_params = {
+    'num_leaves': int(getattr(config, 'LGBM_NUM_LEAVES', 31)),
+    'learning_rate': float(getattr(config, 'LGBM_LEARNING_RATE', 0.1)),
+    'max_depth': int(getattr(config, 'LGBM_MAX_DEPTH', -1))
+    }
+    lgbm_model = get_model(
+        'lgbm',
+        num_first=5,
+        num_first_classes=69,
+        num_sixth_classes=26,
+        params=lgbm_params
+    )
+    # Flatten X_train for LightGBM: (batch, timesteps, features) -> (batch, timesteps * features)
+    X_train_lgbm = X_train.reshape(X_train.shape[0], -1)
+    if cv > 1:
+        logger.info(f"[Pipeline] Running cross-validation for LightGBM (cv={cv})")
+        lgbm_cv_results = cross_validate_model(lgbm_model, X_train_lgbm, (y_train[0], y_train[1]), cv=cv)
+        logger.info(f"[Pipeline] LightGBM CV results: {lgbm_cv_results}")
+    else:
+        lgbm_model.fit(X_train_lgbm, (y_train[0], y_train[1]))
+    models.append(lgbm_model)
+    # Ensemble predictions
+    # Stack X_test into a 3D array if it is a list of 2D arrays
+    if isinstance(X_test, list) or (hasattr(X_test, 'ndim') and X_test.ndim == 1 and hasattr(X_test[0], 'shape')):
+        X_test_batch = np.stack(X_test, axis=0)
+    else:
+        X_test_batch = X_test
+    ensemble_first, ensemble_sixth = ensemble_predict(models, X_test_batch)
+    logger.info(f"[Ensemble] First five shape: {ensemble_first.shape}, Sixth shape: {ensemble_sixth.shape}")
+    if not from_iterative_stacking:
+        logger.info("[Pipeline] Running Iterative Stacking")
+        rounds_first_five, rounds_sixth, round_labels = run_iterative_stacking(
+            train_df, test_df, config, y_true_first_five, y_true_sixth,
+            prev_pred_first_five=prev_pred_first_five, prev_pred_sixth=prev_pred_sixth
         )
-        tracker.log_artifact('multi_round_pred_std.png') if os.path.exists('multi_round_pred_std.png') else None
-        plot_multi_round_kl_divergence(
-            y_true=y_true_first_five,
-            rounds_pred_list=rounds_first_five,
-            prev_pred=prev_pred_first_five,
-            num_balls=5,
-            n_classes=69,
-            round_labels=round_labels,
-            prev_label='Previous'
-        )
-        tracker.log_artifact('multi_round_kl_divergence.png') if os.path.exists('multi_round_kl_divergence.png') else None
-    # Example: log a metric (extend as needed)
-    # tracker.log_metric('example_metric', 0.0)
-    tracker.end_run()
+        logger.info("[Pipeline] Iterative Stacking complete.")
+    else:
+        # If called from iterative stacking, do not recurse
+        rounds_first_five, rounds_sixth, round_labels = [], [], []
+    if not from_iterative_stacking:
+        # Log predictions artifact and plots before returning
+        if os.path.exists(history_path):
+            tracker.log_artifact(history_path)
+        def log_plot_and_artifact(plot_func, plot_args, artifact_path):
+            plot_func(**plot_args)
+            if os.path.exists(artifact_path):
+                tracker.log_artifact(artifact_path)
+
+        if rounds_first_five:
+            log_plot_and_artifact(
+                plot_multi_round_ball_distributions,
+                dict(
+                    y_true=y_true_first_five,
+                    rounds_pred_list=rounds_first_five,
+                    prev_pred=prev_pred_first_five,
+                    num_balls=5,
+                    n_classes=69,
+                    title_prefix='Ball',
+                    round_labels=round_labels,
+                    prev_label='Previous'
+                ),
+                'multi_round_ball_distributions.png'
+            )
+        if rounds_sixth:
+            log_plot_and_artifact(
+                plot_multi_round_powerball_distribution,
+                dict(
+                    y_true=y_true_sixth,
+                    rounds_pred_list=rounds_sixth,
+                    prev_pred=prev_pred_sixth,
+                    n_classes=26,
+                    title='Powerball (6th Ball) Distribution',
+                    round_labels=round_labels,
+                    prev_label='Previous'
+                ),
+                'multi_round_powerball_distribution.png'
+            )
+            log_plot_and_artifact(
+                plot_multi_round_true_std,
+                dict(
+                    y_true=y_true_first_five,
+                    rounds_pred_list=rounds_first_five,
+                    prev_pred=prev_pred_first_five,
+                    num_balls=5,
+                    round_labels=round_labels,
+                    prev_label='Previous'
+                ),
+                'multi_round_true_std.png'
+            )
+            log_plot_and_artifact(
+                plot_multi_round_pred_std,
+                dict(
+                    y_true=y_true_first_five,
+                    rounds_pred_list=rounds_first_five,
+                    prev_pred=prev_pred_first_five,
+                    num_balls=5,
+                    round_labels=round_labels,
+                    prev_label='Previous'
+                ),
+                'multi_round_pred_std.png'
+            )
+            log_plot_and_artifact(
+                plot_multi_round_kl_divergence,
+                dict(
+                    y_true=y_true_first_five,
+                    rounds_pred_list=rounds_first_five,
+                    prev_pred=prev_pred_first_five,
+                    num_balls=5,
+                    n_classes=69,
+                    round_labels=round_labels,
+                    prev_label='Previous'
+                ),
+                'multi_round_kl_divergence.png'
+            )
+        # Example: log a metric (extend as needed)
+        # tracker.log_metric('example_metric', 0.0)
+        tracker.end_run()
+        return ensemble_first, ensemble_sixth
+    else:
+        return ensemble_first, ensemble_sixth
 
 def run_meta_optimization(final_df, config):
     """
@@ -228,6 +373,9 @@ def run_meta_optimization(final_df, config):
         n_particles=getattr(config, 'PSO_PARTICLES', 5),
         n_iter=getattr(config, 'PSO_ITER', 10)
     )
+    if best is None:
+        logger.error("Meta-optimization failed or was aborted (e.g., due to recursion guard). Skipping meta-parameter update.")
+        return
     logger.info(f"Best meta-hyperparameters ({getattr(config, 'META_OPT_METHOD', 'pso')}): %s", dict(zip(var_names, best)))
     for i, name in enumerate(var_names):
         setattr(config, name, best[i])
@@ -262,20 +410,40 @@ def run_iterative_stacking(train_df, test_df, config, y_true_first_five, y_true_
                     base_train_df.loc[mask, col] += np.random.normal(0, noise_std, mask.sum())
                 except Exception as fw:
                     logger.warning(f"Noise addition warning: {fw}")
-        # Run the pipeline for this round
-        # Modular: pipeline handles model training and evaluation
-        run_pipeline(config)
-        # Diagnostics: append predictions if available
-        try:
-            history = get_results_history()
-            if isinstance(history, list) and len(history) > 0:
-                results = history[-1]
-                ff_pred = np.asarray(results['first_five_pred_numbers'])
-                s_pred = np.asarray(results['sixth_pred_number'])
-                rounds_first_five.append(ff_pred)
-                rounds_sixth.append(s_pred)
-        except Exception as e:
-            logger.error(f"[Iterative Stacking] Could not append predictions for round {round_idx+1}: {e}")
+
+        # Run the pipeline for this round and capture ensemble predictions
+        logger.info(f"[Iterative Stacking] Running pipeline for round {round_idx+1}...")
+        ensemble_first, ensemble_sixth = run_pipeline(config, from_iterative_stacking=True)
+        logger.info(f"[Iterative Stacking] Pipeline complete for round {round_idx+1}. Ensemble predictions captured.")
+
+        # Diagnostics: append ensemble predictions directly
+        if ensemble_first is not None and ensemble_sixth is not None:
+            rounds_first_five.append(np.asarray(ensemble_first))
+            rounds_sixth.append(np.asarray(ensemble_sixth))
+        else:
+            logger.warning(f"[Iterative Stacking] Ensemble predictions missing for round {round_idx+1}.")
+
+        # --- LOGICAL INTEGRATION OF ENSEMBLE PREDICTIONS AS META-FEATURES ---
+        # Use the ensemble predictions to update meta-features in base_train_df for the next round
+        # (Assume base_train_df has the same order as the training data used in run_pipeline)
+        if round_idx < num_rounds - 1 and ensemble_first is not None and ensemble_sixth is not None:
+            # For each training sample, update prev_pred_ball_1..5 and prev_pred_sixth
+            # Use argmax to get predicted class (ball number) for each sample and ball
+            try:
+                pred_balls = np.argmax(ensemble_first, axis=-1) + 1  # shape: (n_samples, 5)
+                pred_sixth = np.argmax(ensemble_sixth, axis=-1) + 1  # shape: (n_samples, 1) or (n_samples,)
+                for j in range(5):
+                    base_train_df[f'prev_pred_ball_{j+1}'] = pred_balls[:, j]
+                # Handle shape for sixth ball
+                if len(pred_sixth.shape) > 1 and pred_sixth.shape[1] == 1:
+                    base_train_df['prev_pred_sixth'] = pred_sixth[:, 0]
+                else:
+                    base_train_df['prev_pred_sixth'] = pred_sixth
+                logger.info(f"[Iterative Stacking] Updated meta-features in base_train_df for next round using ensemble predictions.")
+            except Exception as e:
+                logger.warning(f"[Iterative Stacking] Failed to update meta-features with ensemble predictions: {e}")
+
+        logger.info(f"[Iterative Stacking] Completed round {round_idx+1}/{num_rounds}.")
         round_labels.append(f'Round {round_idx+1}')
     return rounds_first_five, rounds_sixth, round_labels
 

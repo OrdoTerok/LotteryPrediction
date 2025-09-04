@@ -37,7 +37,7 @@ def plot_multi_run_true_std(history, num_balls=5, save_path=None):
         preds = np.array(run.get('first_five_pred_numbers', []))
         if preds.shape[0] == 0:
             continue
-        stds = [np.std(preds[:, i]) for i in range(num_balls)]
+        stds = np.std(preds[:, :num_balls], axis=0)
         plt.plot(range(1, num_balls+1), stds, marker='o', label=f'Run {run_idx+1}', color=palette(run_idx % 10))
     plt.title('Predicted Std per Ball Across Runs')
     plt.xlabel('Ball')
@@ -74,7 +74,11 @@ def plot_multi_run_kl_divergence(history, num_balls=5, n_classes=69, save_path=N
         preds = np.array(run.get('first_five_pred_numbers', []))
         if preds.shape[0] == 0:
             continue
-        kls = [kl_divergence(ref_preds[:, i], preds[:, i], n_classes=n_classes) for i in range(num_balls)]
+        # Vectorized KL divergence calculation for all balls
+        kls = np.array([
+            kl_divergence(ref_preds[:, i], preds[:, i], n_classes=n_classes)
+            for i in range(num_balls)
+        ])
         plt.plot(range(1, num_balls+1), kls, marker='o', label=f'Run {run_idx+1}', color=palette(run_idx % 10))
     plt.title('KL Divergence per Ball vs. First Run')
     plt.xlabel('Ball')

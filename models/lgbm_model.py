@@ -1,9 +1,33 @@
 import lightgbm as lgb
 import numpy as np
 from models.base_model import BaseModel
+import logging
 
 class LightGBMModel(BaseModel):
+    def cross_validate(self, X, y, cv=5, **kwargs):
+        """
+        Perform K-fold cross-validation. Returns list of per-fold evaluation results.
+        """
+        from sklearn.model_selection import KFold
+        results = []
+        kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+            logger = logging.getLogger(__name__)
+            logger.info(f"[LGBM][CV] Fold {fold+1}/{cv}...")
+            X_train, X_val = X[train_idx], X[val_idx]
+            if isinstance(y, (list, tuple)):
+                y_train = [v[train_idx] for v in y]
+                y_val = [v[val_idx] for v in y]
+            else:
+                y_train, y_val = y[train_idx], y[val_idx]
+            model = LightGBMModel(self.num_first, self.num_first_classes, self.num_sixth_classes, self.params)
+            model.fit(X_train, y_train, **kwargs)
+            eval_result = model.evaluate(X_val, y_val, **kwargs)
+            results.append(eval_result)
+            logger.info(f"[LGBM][CV] Fold {fold+1} result: {eval_result}")
+        return results
     def __init__(self, num_first=5, num_first_classes=69, num_sixth_classes=26, params=None):
+        logger = logging.getLogger(__name__)
         self.num_first = num_first
         self.num_first_classes = num_first_classes
         self.num_sixth_classes = num_sixth_classes
@@ -13,12 +37,15 @@ class LightGBMModel(BaseModel):
             'metric': 'multi_logloss',
             'verbosity': -1
         }
+        logger.info(f"[LGBM] Creating {num_first} first-ball models and 1 sixth-ball model with params: {self.params}")
         self.models_first = [lgb.LGBMClassifier(**self.params) for _ in range(self.num_first)]
         params6 = self.params.copy()
         params6['num_class'] = num_sixth_classes
         self.model_sixth = lgb.LGBMClassifier(**params6)
 
     def fit(self, X, y, **kwargs):
+        logger = logging.getLogger(__name__)
+        logger.info(f"[LGBM] Starting fit: X shape={X.shape}, y shapes={[arr.shape for arr in y] if isinstance(y, (list, tuple)) else y.shape}")
         y_first, y_sixth = y
         if y_first.ndim == 3:
             y_first = np.argmax(y_first, axis=-1)
@@ -27,11 +54,16 @@ class LightGBMModel(BaseModel):
         num_first_classes = self.num_first_classes
         num_sixth_classes = self.num_sixth_classes
         for i, model in enumerate(self.models_first):
+            logger.info(f"[LGBM] Fitting model for ball {i+1}/{self.num_first}")
             y_col = y_first[:, i]
             missing_classes = set(range(num_first_classes)) - set(np.unique(y_col))
-            fit_kwargs = {'early_stopping_rounds': 10, 'eval_metric': 'multi_logloss', 'verbose': False}
+            fit_kwargs = {}
             fit_kwargs.update(kwargs)
+            if 'eval_set' in fit_kwargs:
+                fit_kwargs['early_stopping_rounds'] = 10
+                fit_kwargs['eval_metric'] = 'multi_logloss'
             if missing_classes:
+                logger.warning(f"[LGBM] Ball {i+1}: Missing classes {missing_classes}, adding dummy samples.")
                 X_dummy = np.repeat(X[:1], len(missing_classes), axis=0)
                 y_dummy = np.array(list(missing_classes))
                 X_aug = np.concatenate([X, X_dummy], axis=0)
@@ -39,11 +71,16 @@ class LightGBMModel(BaseModel):
                 model.fit(X_aug, y_aug, **fit_kwargs)
             else:
                 model.fit(X, y_col, **fit_kwargs)
+            logger.info(f"[LGBM] Finished fitting model for ball {i+1}/{self.num_first}")
         y6 = y_sixth[:, 0]
         missing_classes6 = set(range(num_sixth_classes)) - set(np.unique(y6))
-        fit_kwargs6 = {'early_stopping_rounds': 10, 'eval_metric': 'multi_logloss', 'verbose': False}
+        fit_kwargs6 = {}
         fit_kwargs6.update(kwargs)
+        if 'eval_set' in fit_kwargs6:
+            fit_kwargs6['early_stopping_rounds'] = 10
+            fit_kwargs6['eval_metric'] = 'multi_logloss'
         if missing_classes6:
+            logger.warning(f"[LGBM] Sixth ball: Missing classes {missing_classes6}, adding dummy samples.")
             X_dummy6 = np.repeat(X[:1], len(missing_classes6), axis=0)
             y_dummy6 = np.array(list(missing_classes6))
             X_aug6 = np.concatenate([X, X_dummy6], axis=0)
@@ -51,9 +88,15 @@ class LightGBMModel(BaseModel):
             self.model_sixth.fit(X_aug6, y_aug6, **fit_kwargs6)
         else:
             self.model_sixth.fit(X, y6, **fit_kwargs6)
+        logger.info("[LGBM] Finished fit for all balls.")
 
     def predict(self, X, feature_names=None, **kwargs):
+        logger = logging.getLogger(__name__)
+        logger.info(f"[LGBM] Starting prediction: X shape={X.shape}")
         import pandas as pd
+        # Automatically flatten 3D input to 2D if needed
+        if X.ndim == 3:
+            X = X.reshape(X.shape[0], -1)
         if feature_names is not None and not isinstance(X, pd.DataFrame):
             if len(feature_names) == X.shape[1]:
                 X = pd.DataFrame(X, columns=feature_names)
@@ -65,27 +108,25 @@ class LightGBMModel(BaseModel):
                 pred = model.predict_proba(X)
                 preds.append(pred)
             except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.error(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
                 raise
         try:
             first_five_pred = np.stack(preds, axis=1)
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"[ERROR][LGBM] Exception during np.stack for first_five_pred: {e}")
             raise
         try:
             sixth_pred = self.model_sixth.predict_proba(X)[:, np.newaxis, :]
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
             raise
+        logger.info(f"[LGBM] Prediction complete: first_five_pred shape={first_five_pred.shape}, sixth_pred shape={sixth_pred.shape}")
         return first_five_pred, sixth_pred
 
     def evaluate(self, X, y, feature_names=None, **kwargs):
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("  [LGBM] Starting evaluation...")
         # Returns log loss for each ball and sixth
         from sklearn.metrics import log_loss
         first_five_pred, sixth_pred = self.predict(X, feature_names=feature_names, **kwargs)
@@ -103,31 +144,9 @@ class LightGBMModel(BaseModel):
         y_pred6 = sixth_pred[:, 0, :]
         losses.append(log_loss(y_true6, y_pred6))
         return losses
-        """
-        Builds one LightGBM multiclass classifier for each lottery ball (first five and sixth).
-        Args:
-            num_first: int, number of first balls
-            num_first_classes: int, number of classes for first balls
-            num_sixth_classes: int, number of classes for sixth ball
-            params: dict, LightGBM parameters
-        Returns:
-            List of LightGBM models for first five balls, one for sixth ball
-        """
-        if params is None:
-            params = {
-                'objective': 'multiclass',
-                'num_class': num_first_classes,
-                'metric': 'multi_logloss',
-                'verbosity': -1
-            }
-        models_first = [lgb.LGBMClassifier(**params) for _ in range(num_first)]
-        params6 = params.copy()
-        params6['num_class'] = num_sixth_classes
-        model_sixth = lgb.LGBMClassifier(**params6)
-        return models_first, model_sixth
 
     @staticmethod
-    def fit(models_first, model_sixth, X, y):
+    def fit_models(models_first, model_sixth, X, y):
         """
         Fit LightGBM models for each ball, ensuring all classes are present for each model.
         Args:
@@ -211,3 +230,28 @@ class LightGBMModel(BaseModel):
             logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
             raise
         return first_five_pred, sixth_pred
+
+    @staticmethod
+    def create_models(num_first, num_first_classes, num_sixth_classes, params=None):
+        """
+        Builds one LightGBM multiclass classifier for each lottery ball (first five and sixth).
+        Args:
+            num_first: int, number of first balls
+            num_first_classes: int, number of classes for first balls
+            num_sixth_classes: int, number of classes for sixth ball
+            params: dict, LightGBM parameters
+        Returns:
+            List of LightGBM models for first five balls, one for sixth ball
+        """
+        if params is None:
+            params = {
+                'objective': 'multiclass',
+                'num_class': num_first_classes,
+                'metric': 'multi_logloss',
+                'verbosity': -1
+            }
+        models_first = [lgb.LGBMClassifier(**params) for _ in range(num_first)]
+        params6 = params.copy()
+        params6['num_class'] = num_sixth_classes
+        model_sixth = lgb.LGBMClassifier(**params6)
+        return models_first, model_sixth

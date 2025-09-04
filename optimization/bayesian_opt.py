@@ -13,9 +13,8 @@ from util import model_utils
 import config
 
 # Define the search space for meta-parameters
-def bayesian_optimize(var_names, bounds, final_df, n_trials=10):
+def bayesian_optimize(var_names, bounds, final_df, n_trials=10, cv=1):
 	def objective(trial):
-		# Suggest values for each meta-parameter
 		params = []
 		for i, (name, (low, high)) in enumerate(zip(var_names, bounds)):
 			if isinstance(low, int) and isinstance(high, int):
@@ -23,12 +22,26 @@ def bayesian_optimize(var_names, bounds, final_df, n_trials=10):
 			else:
 				val = trial.suggest_float(name, float(low), float(high))
 			params.append(val)
-		# Set config
 		for i, name in enumerate(var_names):
 			setattr(config, name, params[i])
-		# Evaluate fitness (lower is better)
 		try:
-			fitness = model_utils.run_full_workflow(final_df, config)
+			# If cv > 1, use cross-validation
+			if cv > 1:
+				from models.model_factory import get_model
+				from data.preprocessing import prepare_data_for_lstm
+				look_back_window = getattr(config, 'LOOK_BACK_WINDOW', 10)
+				train_df, _ = final_df if isinstance(final_df, tuple) else (final_df, None)
+				X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+				model_type = getattr(config, 'MODEL_TYPE', 'lstm')
+				model = get_model(model_type, input_shape=X_train.shape[1:])
+				cv_results = model.cross_validate(X_train, y_train, cv=cv)
+				# Use mean of first metric as fitness
+				if isinstance(cv_results[0], (list, tuple, np.ndarray)):
+					fitness = float(np.mean([r[0] for r in cv_results]))
+				else:
+					fitness = float(np.mean(cv_results))
+			else:
+				fitness = model_utils.run_full_workflow(final_df, config)
 		except Exception as e:
 			import logging
 			logger = logging.getLogger(__name__)

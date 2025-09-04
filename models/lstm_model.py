@@ -2,8 +2,33 @@ import tensorflow as tf
 import numpy as np
 import keras_tuner as kt
 from tensorflow.keras import backend as K
+import logging
 
 class LSTMModel:
+    def cross_validate(self, X, y, cv=5, **kwargs):
+        """
+        Perform K-fold cross-validation. Returns list of per-fold evaluation results.
+        """
+        from sklearn.model_selection import KFold
+        results = []
+        kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+            self.logger.info(f"[LSTM][CV] Fold {fold+1}/{cv}...")
+            X_train, X_val = X[train_idx], X[val_idx]
+            if isinstance(y, dict):
+                y_train = {k: v[train_idx] for k, v in y.items()}
+                y_val = {k: v[val_idx] for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y_train = [v[train_idx] for v in y]
+                y_val = [v[val_idx] for v in y]
+            else:
+                y_train, y_val = y[train_idx], y[val_idx]
+            model = LSTMModel(self.model.input_shape[1:])
+            model.fit(X_train, y_train, **kwargs)
+            eval_result = model.evaluate(X_val, y_val, **kwargs)
+            results.append(eval_result)
+            self.logger.info(f"[LSTM][CV] Fold {fold+1} result: {eval_result}")
+        return results
     class LoggingCallback(tf.keras.callbacks.Callback):
         def __init__(self, logger):
             super().__init__()
@@ -13,11 +38,73 @@ class LSTMModel:
         def on_epoch_end(self, epoch, logs=None):
             log_str = f"Epoch {epoch+1} end: " + ', '.join([f"{k}: {v:.4f}" for k, v in (logs or {}).items()])
             self.logger.info(log_str)
-        def on_train_batch_end(self, batch, logs=None):
-            log_str = f"Batch {batch+1}: " + ', '.join([f"{k}: {v:.4f}" for k, v in (logs or {}).items()])
-            self.logger.info(log_str)
+
+    def __init__(self, input_shape, hp=None, use_custom_loss=False, force_low_units=False, force_simple=False,
+                 units=None, dropout=None, learning_rate=None, label_smoothing=None, temp_max=None):
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"[LSTM] Creating model with input_shape={input_shape}, use_custom_loss={use_custom_loss}, "
+                         f"force_low_units={force_low_units}, force_simple={force_simple}, units={units}, "
+                         f"dropout={dropout}, learning_rate={learning_rate}, label_smoothing={label_smoothing}, temp_max={temp_max}")
+        self.model = self.build_lstm_model(
+            hp or kt.HyperParameters(),
+            input_shape,
+            use_custom_loss,
+            force_low_units,
+            force_simple,
+            units=units,
+            dropout=dropout,
+            learning_rate=learning_rate,
+            label_smoothing=label_smoothing,
+            temp_max=temp_max
+        )
+        self.logger.info("[LSTM] Model created.")
+
+    def fit(self, X, y, **kwargs):
+        def get_y_shapes(y):
+            if isinstance(y, dict):
+                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                return [v.shape if hasattr(v, 'shape') else type(v) for v in y]
+            elif hasattr(y, 'shape'):
+                return y.shape
+            else:
+                return type(y)
+        self.logger.info(f"[LSTM] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        callbacks = kwargs.get('callbacks', [])
+        callbacks = list(callbacks) + [LSTMModel.LoggingCallback(self.logger)]
+        kwargs['callbacks'] = callbacks
+        history = self.model.fit(X, y, **kwargs)
+        self.logger.info("[LSTM] Finished fit.")
+        return history
+
+    def predict(self, X, **kwargs):
+        self.logger.info(f"[LSTM] Starting prediction: X shape={X.shape}")
+        preds = self.model.predict(X, **kwargs)
+        if isinstance(preds, (list, tuple)):
+            pred_shapes = [p.shape for p in preds]
+        else:
+            pred_shapes = preds.shape
+        self.logger.info(f"[LSTM] Prediction complete: output shapes={pred_shapes}")
+        return preds
+
+    def evaluate(self, X, y, **kwargs):
+        def get_y_shapes(y):
+            if isinstance(y, dict):
+                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                return [v.shape if hasattr(v, 'shape') else type(v) for v in y]
+            elif hasattr(y, 'shape'):
+                return y.shape
+            else:
+                return type(y)
+        self.logger.info(f"[LSTM] Starting evaluation: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        results = self.model.evaluate(X, y, **kwargs)
+        self.logger.info(f"[LSTM] Evaluation complete: results={results}")
+        return results
+
     @staticmethod
-    def build_lstm_model(hp, input_shape, use_custom_loss=False, force_low_units=False, force_simple=False):
+    def build_lstm_model(hp, input_shape, use_custom_loss=False, force_low_units=False, force_simple=False,
+                        units=None, dropout=None, learning_rate=None, label_smoothing=None, temp_max=None):
         """
         Builds and compiles an LSTM model for KerasTuner hypertuning, with two outputs:
         - first_five: (5, 69) softmax for the first 5 numbers
@@ -34,24 +121,25 @@ class LSTMModel:
         inputs = tf.keras.Input(shape=input_shape)
         x = tf.keras.layers.GaussianNoise(0.5)(inputs)
         if force_simple:
-            units = 64
-            x = tf.keras.layers.SimpleRNN(units=units, activation='relu')(x)
+            _units = units if units is not None else 64
+            x = tf.keras.layers.SimpleRNN(units=_units, activation='relu')(x)
         else:
-            units = 128 if force_low_units else hp.Int('units', min_value=64, max_value=256, step=32)
+            _units = units if units is not None else (128 if force_low_units else hp.Int('units', min_value=64, max_value=256, step=32))
             use_bidirectional = hp.Boolean('bidirectional', default=True)
-            dropout_rate = hp.Float('dropout', min_value=0.3, max_value=0.7, step=0.1, default=0.5)
-            lstm1 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=True)
+            _dropout = dropout if dropout is not None else hp.Float('dropout', min_value=0.3, max_value=0.7, step=0.1, default=0.5)
+            lstm1 = tf.keras.layers.LSTM(units=_units, activation='relu', return_sequences=True)
             if use_bidirectional:
                 x = tf.keras.layers.Bidirectional(lstm1)(x)
             else:
                 x = lstm1(x)
-            x = tf.keras.layers.Dropout(dropout_rate)(x)
-            lstm2 = tf.keras.layers.LSTM(units=units, activation='relu', return_sequences=False)
+            x = tf.keras.layers.Dropout(_dropout)(x)
+            lstm2 = tf.keras.layers.LSTM(units=_units, activation='relu', return_sequences=False)
             if use_bidirectional:
                 x = tf.keras.layers.Bidirectional(lstm2)(x)
             else:
                 x = lstm2(x)
-            x = tf.keras.layers.Dropout(dropout_rate)(x)
+            x = tf.keras.layers.Dropout(_dropout)(x)
+
         def diversity_penalty(y_pred):
             # Penalize repeated predictions in the batch
             pred_idx = tf.argmax(y_pred, axis=-1)
@@ -110,16 +198,22 @@ class LSTMModel:
                 return tf.reduce_mean(jaccard)
 
             def duplicate_penalty(y_pred):
-                # Penalize if same class is predicted for multiple balls in a ticket
-                # y_pred: (batch, balls, classes)
-                if y_pred.shape[1] < 2:
-                    return 0.0
+                # Vectorized duplicate penalty: count duplicates in each row
                 pred_idx = tf.argmax(y_pred, axis=-1)  # (batch, balls)
-                penalty = 0.0
-                for i in range(y_pred.shape[1]):
-                    for j in range(i+1, y_pred.shape[1]):
-                        penalty += tf.reduce_mean(tf.cast(tf.equal(pred_idx[:, i], pred_idx[:, j]), tf.float32))
-                return penalty / (y_pred.shape[1] * (y_pred.shape[1] - 1) / 2)
+                num_balls = tf.shape(pred_idx)[1]
+                max_ball = 69  # Powerball first five max value
+                # For each row, count how many times each value appears
+                counts = tf.map_fn(
+                    lambda row: tf.math.bincount(row, minlength=max_ball, maxlength=max_ball, dtype=tf.int32),
+                    pred_idx,
+                    fn_output_signature=tf.TensorSpec(shape=(max_ball,), dtype=tf.int32)
+                )
+                # For each row, sum the number of duplicates (count > 1)
+                duplicates = tf.reduce_sum(tf.nn.relu(tf.cast(counts > 1, tf.float32) * (tf.cast(counts, tf.float32) - 1)), axis=1)
+                n = tf.cast(num_balls, tf.float32)
+                denom = n * (n - 1) / 2.0
+                penalty = tf.reduce_mean(duplicates / denom)
+                return penalty
 
 
             def anti_copying_penalty(y_pred, meta_features=None):
@@ -172,6 +266,8 @@ class LSTMModel:
                 }
             )
         else:
+            _learning_rate = learning_rate if learning_rate is not None else 1e-3
+            optimizer = tf.keras.optimizers.Adam(_learning_rate)
             model.compile(
                 optimizer=optimizer,
                 loss={
@@ -231,14 +327,36 @@ class LSTMModel:
         logger.info("Model training complete.")
         return model
 
-    def __init__(self, input_shape, hp=None, use_custom_loss=False, force_low_units=False, force_simple=False):
-        self.model = self.build_lstm_model(hp or kt.HyperParameters(), input_shape, use_custom_loss, force_low_units, force_simple)
-
     def fit(self, X, y, **kwargs):
-        return self.model.fit(X, y, **kwargs)
+        def get_y_shapes(y):
+            if isinstance(y, dict):
+                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                return [v.shape if hasattr(v, 'shape') else type(v) for v in y]
+            elif hasattr(y, 'shape'):
+                return y.shape
+            else:
+                return type(y)
+        self.logger.info(f"[LSTM] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        callbacks = kwargs.get('callbacks', [])
+        callbacks = list(callbacks) + [LSTMModel.LoggingCallback(self.logger)]
+        kwargs['callbacks'] = callbacks
+        history = self.model.fit(X, y, **kwargs)
+        self.logger.info("[LSTM] Finished fit.")
+        return history
 
     def predict(self, X, **kwargs):
-        return self.model.predict(X, **kwargs)
+        self.logger.info(f"[LSTM] Starting prediction: X shape={X.shape}")
+        preds = self.model.predict(X, **kwargs)
+        if isinstance(preds, (list, tuple)):
+            pred_shapes = [p.shape for p in preds]
+        else:
+            pred_shapes = preds.shape
+        self.logger.info(f"[LSTM] Prediction complete: output shapes={pred_shapes}")
+        return preds
 
     def evaluate(self, X, y, **kwargs):
-        return self.model.evaluate(X, y, **kwargs)
+        self.logger.info(f"[LSTM] Starting evaluation: X shape={X.shape}, y shapes={[arr.shape for arr in y] if isinstance(y, (list, tuple)) else y.shape}")
+        results = self.model.evaluate(X, y, **kwargs)
+        self.logger.info(f"[LSTM] Evaluation complete: results={results}")
+        return results

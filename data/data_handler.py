@@ -104,11 +104,15 @@ class DataHandler:
         Args:
             df (pandas.DataFrame): The DataFrame to save.
         """
+        DataHandler._save_df_with_logging(df, "data_sets/base_dataset.csv")
+
+    @staticmethod
+    def _save_df_with_logging(df, path):
         try:
-            df.to_csv("data_sets/base_dataset.csv", index=False)
-            logger.info(f"DataFrame successfully saved to data_sets/base_dataset.csv")
+            df.to_csv(path, index=False)
+            logger.info(f"DataFrame successfully saved to {path}")
         except Exception as e:
-            logger.error(f"Error saving DataFrame to CSV: {e}")
+            logger.error(f"Error saving DataFrame to {path}: {e}")
 
     @staticmethod
     def split_dataframe_by_percentage(
@@ -146,37 +150,42 @@ class DataHandler:
         import config
         import json
         df = df.sort_values(by='Draw Date')
-        winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
-        X = []
-        y_first_five = []
-        y_sixth = []
         num_first = 5
         num_first_classes = 69
         num_sixth_classes = 26
         meta_cols = [col for col in df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
-        for i in range(len(winning_numbers) - look_back):
-            window_feats = []
-            for j in range(i, i + look_back):
-                base = np.array(winning_numbers[j])
-                meta = []
-                if meta_cols:
-                    meta_row = df.iloc[j][meta_cols] if j < len(df) else None
-                    if meta_row is not None:
-                        meta = meta_row.values.astype(np.float32)
-                if len(meta) > 0:
-                    window_feats.append(np.concatenate([base, meta]))
-                else:
-                    window_feats.append(base)
-            X.append(np.stack(window_feats))
-            target_numbers = winning_numbers[i + look_back]
-            first_five_onehot = np.zeros((num_first, num_first_classes), dtype=np.float32)
-            for j, n in enumerate(target_numbers[:num_first]):
-                if 1 <= n <= num_first_classes:
-                    first_five_onehot[j, n - 1] = 1.0
-            y_first_five.append(first_five_onehot)
-            sixth_onehot = np.zeros((1, num_sixth_classes), dtype=np.float32)
-            n6 = target_numbers[num_first]
-            if 1 <= n6 <= num_sixth_classes:
-                sixth_onehot[0, n6 - 1] = 1.0
-            y_sixth.append(sixth_onehot)
-        return np.array(X), (np.array(y_first_five), np.array(y_sixth))
+        # Parse winning numbers into a 2D numpy array
+        winning_numbers = np.stack(df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values)
+        n_rows = winning_numbers.shape[0]
+        # Prepare meta-features if present
+        meta_arr = None
+        if meta_cols:
+            meta_arr = df[meta_cols].to_numpy(dtype=np.float32)
+        # Build windowed features using stride tricks
+        num_samples = n_rows - look_back
+        if num_samples <= 0:
+            return np.empty((0,)), (np.empty((0,)), np.empty((0,)))
+        # Windowed winning numbers: shape (num_samples, look_back, 6)
+        wn_windows = np.lib.stride_tricks.sliding_window_view(winning_numbers, window_shape=(look_back, 6))[:, 0, :, :]
+        # Windowed meta-features: shape (num_samples, look_back, meta_dim) if meta_cols else None
+        if meta_arr is not None:
+            meta_windows = np.lib.stride_tricks.sliding_window_view(meta_arr, window_shape=(look_back, meta_arr.shape[1]))[:, 0, :, :]
+            # Concatenate base and meta along last axis
+            X = np.concatenate([wn_windows, meta_windows], axis=-1)
+        else:
+            X = wn_windows
+        # Prepare targets
+        target_numbers = winning_numbers[look_back:]
+        # One-hot encode first five
+        y_first_five = np.zeros((num_samples, num_first, num_first_classes), dtype=np.float32)
+        idx = np.arange(num_samples)[:, None]
+        pos = np.arange(num_first)
+        vals = target_numbers[:, :num_first] - 1
+        mask = (vals >= 0) & (vals < num_first_classes)
+        y_first_five[idx, pos, vals] = mask
+        # One-hot encode sixth
+        y_sixth = np.zeros((num_samples, 1, num_sixth_classes), dtype=np.float32)
+        n6 = target_numbers[:, num_first] - 1
+        mask6 = (n6 >= 0) & (n6 < num_sixth_classes)
+        y_sixth[np.arange(num_samples), 0, n6] = mask6
+        return X, (y_first_five, y_sixth)

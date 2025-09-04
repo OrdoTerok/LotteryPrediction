@@ -1,7 +1,32 @@
 import tensorflow as tf
 from tensorflow.keras import layers, Model
+import logging
 
 class RNNModel:
+    def cross_validate(self, X, y, cv=5, **kwargs):
+        """
+        Perform K-fold cross-validation. Returns list of per-fold evaluation results.
+        """
+        from sklearn.model_selection import KFold
+        results = []
+        kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+            self.logger.info(f"[RNN][CV] Fold {fold+1}/{cv}...")
+            X_train, X_val = X[train_idx], X[val_idx]
+            if isinstance(y, dict):
+                y_train = {k: v[train_idx] for k, v in y.items()}
+                y_val = {k: v[val_idx] for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y_train = [v[train_idx] for v in y]
+                y_val = [v[val_idx] for v in y]
+            else:
+                y_train, y_val = y[train_idx], y[val_idx]
+            model = RNNModel(self.model.input_shape[1:])
+            model.fit(X_train, y_train, **kwargs)
+            eval_result = model.evaluate(X_val, y_val, **kwargs)
+            results.append(eval_result)
+            self.logger.info(f"[RNN][CV] Fold {fold+1} result: {eval_result}")
+        return results
     @staticmethod
     def build_rnn_model(hp=None, input_shape=(10, 6),
                         units=64, num_layers=1, dropout=0.2,
@@ -155,14 +180,39 @@ class RNNModel:
             model._tuner_batch_size = batch_size
         return model
 
-    def __init__(self, input_shape, hp=None, use_custom_loss=False, units=64, num_layers=1, dropout=0.2, use_bidirectional=False, optimizer='adam', learning_rate=1e-3):
+    def __init__(self, input_shape, hp=None, use_custom_loss=False, units=64, num_layers=1, dropout=0.2, use_bidirectional=False, optimizer='adam', learning_rate=1e-3, label_smoothing=None, temp_max=None):
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"[RNN] Creating model with input_shape={input_shape}, hp={hp}, use_custom_loss={use_custom_loss}, units={units}, num_layers={num_layers}, dropout={dropout}, use_bidirectional={use_bidirectional}, optimizer={optimizer}, learning_rate={learning_rate}, label_smoothing={label_smoothing}, temp_max={temp_max}")
         self.model = self.build_rnn_model(hp, input_shape, units, num_layers, dropout, use_bidirectional, optimizer, learning_rate, use_custom_loss)
+        self.logger.info("[RNN] Model created.")
 
     def fit(self, X, y, **kwargs):
-        return self.model.fit(X, y, **kwargs)
+        def get_y_shapes(y):
+            if isinstance(y, dict):
+                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                return [v.shape if hasattr(v, 'shape') else type(v) for v in y]
+            elif hasattr(y, 'shape'):
+                return y.shape
+            else:
+                return type(y)
+        self.logger.info(f"[RNN] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        history = self.model.fit(X, y, **kwargs)
+        self.logger.info("[RNN] Finished fit.")
+        return history
 
     def predict(self, X, **kwargs):
-        return self.model.predict(X, **kwargs)
+        self.logger.info(f"[RNN] Starting prediction: X shape={X.shape}")
+        preds = self.model.predict(X, **kwargs)
+        if isinstance(preds, (list, tuple)):
+            pred_shapes = [p.shape for p in preds]
+        else:
+            pred_shapes = preds.shape
+        self.logger.info(f"[RNN] Prediction complete: output shapes={pred_shapes}")
+        return preds
 
     def evaluate(self, X, y, **kwargs):
-        return self.model.evaluate(X, y, **kwargs)
+        self.logger.info(f"[RNN] Starting evaluation: X shape={X.shape}, y shapes={[arr.shape for arr in y] if isinstance(y, (list, tuple)) else y.shape}")
+        results = self.model.evaluate(X, y, **kwargs)
+        self.logger.info(f"[RNN] Evaluation complete: results={results}")
+        return results

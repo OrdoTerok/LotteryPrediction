@@ -10,8 +10,13 @@ def kl_divergence(p, q):
 
 def kl_to_uniform(p):
     n = p.shape[-1]
-    uniform = np.ones(n) / n
-    return np.mean([kl_divergence(pred, uniform) for pred in p])
+    uniform = np.ones((1, n)) / n
+    # Vectorized KL divergence for all rows in p
+    p = np.asarray(p, dtype=np.float64)
+    uniform = np.broadcast_to(uniform, p.shape)
+    # Use axis=1 to compute KL for each row
+    kls = np.sum(np.clip(p, 1e-12, 1) * np.log(np.clip(p, 1e-12, 1) / np.clip(uniform, 1e-12, 1)), axis=1)
+    return np.mean(kls)
 
 def smooth_labels(y, smoothing):
     y = np.asarray(y, dtype=np.float32)

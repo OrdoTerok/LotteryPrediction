@@ -12,9 +12,14 @@ def plot_closest_history_vs_true(history, save_path=None):
         closest_history = run.get('closest_history', [])
         if not closest_history:
             continue
-        match_counts = [entry['match_count'] for entry in closest_history]
-        true_counts = [entry['true_count'] for entry in closest_history]
-        within_margin = [entry['within_10_percent'] for entry in closest_history]
+        # Vectorized extraction using numpy
+        arr = np.array([
+            (entry['match_count'], entry['true_count'], entry['within_10_percent'])
+            for entry in closest_history
+        ])
+        match_counts = arr[:, 0].astype(int)
+        true_counts = arr[:, 1].astype(int)
+        within_margin = arr[:, 2].astype(bool)
         indices = np.arange(len(match_counts))
         # Plot true counts only for the first run (assume same for all)
         if run_idx == 0:
@@ -27,10 +32,10 @@ def plot_closest_history_vs_true(history, save_path=None):
             label=f'Predicted Match Count (Run {run_idx+1})',
             alpha=0.6
         )
-        # Optionally, highlight within-margin points
-        for idx, (x, y, w) in enumerate(zip(indices, match_counts, within_margin)):
-            if w:
-                plt.scatter(x, y, c=[colors(run_idx)], marker='*', s=80, edgecolor='k', linewidths=0.5)
+        # Optionally, highlight within-margin points (vectorized)
+        highlight_idx = np.where(within_margin)[0]
+        if highlight_idx.size > 0:
+            plt.scatter(indices[highlight_idx], match_counts[highlight_idx], c=[colors(run_idx)], marker='*', s=80, edgecolor='k', linewidths=0.5)
     plt.xlabel('Sample Index')
     plt.ylabel('Count')
     plt.title('Closest Prediction Match Count vs. True Count (All Runs)')

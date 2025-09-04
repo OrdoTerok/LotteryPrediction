@@ -70,7 +70,15 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int):
         if 1 <= n6 <= num_sixth_classes:
             sixth_onehot[0, n6 - 1] = 1.0
         y_sixth.append(sixth_onehot)
-    return np.array(X), (np.array(y_first_five), np.array(y_sixth))
+    X_arr = np.array(X)
+    y_first_five_arr = np.array(y_first_five)
+    y_sixth_arr = np.array(y_sixth)
+    # Ensure X is 3D: (samples, timesteps, features)
+    if X_arr.ndim == 2:
+        # If (samples, features), reshape to (samples, 1, features)
+        X_arr = X_arr[:, np.newaxis, :]
+    assert X_arr.ndim == 3, f"LSTM input X must be 3D, got shape {X_arr.shape}"
+    return X_arr, (y_first_five_arr, y_sixth_arr)
 # data/preprocessing.py
 # Functions for data cleaning, feature engineering, and preprocessing.
 

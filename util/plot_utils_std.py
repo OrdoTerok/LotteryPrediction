@@ -29,11 +29,11 @@ def plot_multi_round_true_std(y_true, rounds_pred_list, prev_pred=None, num_ball
         logger.info("[PLOT DIAG] plot_multi_round_true_std prev_pred (first 5): %s", prev_pred[:5])
     for idx, y_pred in enumerate(rounds_pred_list):
         logger.info(f"[PLOT DIAG] plot_multi_round_true_std round {idx+1} y_pred (first 5): %s", y_pred[:5])
-    true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
+    true_stds = np.std(y_true, axis=0)[:num_balls]
     stds.append(true_stds)
     labels.append('True')
     if prev_pred is not None:
-        prev_stds = [np.std(prev_pred[:, i]) for i in range(num_balls)]
+        prev_stds = np.std(prev_pred, axis=0)[:num_balls]
         stds.append(prev_stds)
         labels.append(prev_label)
     # Ensure unique labels
@@ -47,7 +47,7 @@ def plot_multi_round_true_std(y_true, rounds_pred_list, prev_pred=None, num_ball
         used_labels.add(label)
         return label
     for idx, y_pred in enumerate(rounds_pred_list):
-        round_stds = [np.std(y_pred[:, i]) for i in range(num_balls)]
+        round_stds = np.std(y_pred, axis=0)[:num_balls]
         stds.append(round_stds)
         if round_labels and idx < len(round_labels):
             label = round_labels[idx]
@@ -76,11 +76,11 @@ def plot_multi_round_pred_std(y_true, rounds_pred_list, prev_pred=None, num_ball
         logger.info("[PLOT DIAG] plot_multi_round_pred_std prev_pred (first 5): %s", prev_pred[:5])
     for idx, y_pred in enumerate(rounds_pred_list):
         logger.info(f"[PLOT DIAG] plot_multi_round_pred_std round {idx+1} y_pred (first 5): %s", y_pred[:5])
-    true_stds = [np.std(y_true[:, i]) for i in range(num_balls)]
+    true_stds = np.std(y_true, axis=0)[:num_balls]
     stds.append(true_stds)
     labels.append('True')
     if prev_pred is not None:
-        prev_stds = [np.std(prev_pred[:, i]) for i in range(num_balls)]
+        prev_stds = np.std(prev_pred, axis=0)[:num_balls]
         stds.append(prev_stds)
         labels.append(prev_label)
     # Ensure unique labels
@@ -94,7 +94,7 @@ def plot_multi_round_pred_std(y_true, rounds_pred_list, prev_pred=None, num_ball
         used_labels.add(label)
         return label
     for idx, y_pred in enumerate(rounds_pred_list):
-        round_stds = [np.std(y_pred[:, i]) for i in range(num_balls)]
+        round_stds = np.std(y_pred, axis=0)[:num_balls]
         stds.append(round_stds)
         if round_labels and idx < len(round_labels):
             label = round_labels[idx]
@@ -131,11 +131,13 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
     labels = []
     kls.append([0.0 for _ in range(num_balls)])
     labels.append('True')
-    def get_dist(arr, i):
-        return np.bincount(arr[:, i]-1, minlength=n_classes) / arr.shape[0]
-    true_dists = [get_dist(y_true, i) for i in range(num_balls)]
+    def get_dist_matrix(arr):
+        # arr: (n_samples, num_balls)
+        return np.stack([np.bincount(arr[:, i]-1, minlength=n_classes) / arr.shape[0] for i in range(num_balls)], axis=0)
+    true_dists = get_dist_matrix(y_true)
     if prev_pred is not None:
-        prev_kls = [kl_divergence(true_dists[i], get_dist(prev_pred, i)) for i in range(num_balls)]
+        prev_dists = get_dist_matrix(prev_pred)
+        prev_kls = np.sum(true_dists * np.log(np.clip(true_dists / np.clip(prev_dists, 1e-12, 1), 1e-12, 1)), axis=1)
         kls.append(prev_kls)
         labels.append(prev_label)
     logger.info("[PLOT DIAG] plot_multi_round_kl_divergence y_true (first 5): %s", y_true[:5])
@@ -153,7 +155,8 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
         return label
     for idx, y_pred in enumerate(rounds_pred_list):
         logger.info(f"[PLOT DIAG] plot_multi_round_kl_divergence round {idx+1} y_pred (first 5): %s", y_pred[:5])
-        kl = [kl_divergence(y_true[:, i], y_pred[:, i], n_classes) for i in range(num_balls)]
+        pred_dists = get_dist_matrix(y_pred)
+        kl = np.sum(true_dists * np.log(np.clip(true_dists / np.clip(pred_dists, 1e-12, 1), 1e-12, 1)), axis=1)
         kls.append(kl)
         if round_labels and idx < len(round_labels):
             label = round_labels[idx]
