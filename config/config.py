@@ -29,10 +29,16 @@ ENTROPY_PENALTY_WEIGHT = 0.5
 # Label smoothing and uniform prior for regularization
 LABEL_SMOOTHING = 0.05
 UNIFORM_MIX_PROB = 0.05
-# Lower pseudo-label confidence threshold for more diversity
+
+# --- Data Augmentation: Pseudo-labeling and Noise Injection ---
+# Enable/disable pseudo-labeling and noise injection in the pipeline
+USE_PSEUDO_LABELING = False  # Set True to enable pseudo-labeling
+USE_NOISE_INJECTION = False  # Set True to enable noise injection
+# Pseudo-labeling thresholds
 PSEUDO_CONFIDENCE_THRESHOLD = 0.7
-# Minimum entropy for pseudo-label acceptance (per sample, per ball)
 PSEUDO_MIN_ENTROPY = 2.5
+# Noise injection parameters
+NOISE_STD = 0.1  # Standard deviation for Gaussian noise
 
 # --- Iterative stacking ---
 # If True, use previous predictions as meta-features for next run

@@ -93,6 +93,19 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         if not from_iterative_stacking:
             tracker.log_artifact('data_sets/base_dataset.csv', artifact_name='base_dataset.csv')
     train_df, test_df = split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
+    # --- Modular Data Augmentation: Pseudo-labeling and Noise Injection ---
+    from data import augmentation
+    if getattr(config, 'USE_PSEUDO_LABELING', False):
+        logger.info("[Augmentation] Applying pseudo-labeling to training data...")
+        # NOTE: You must provide a trained model for pseudo-labeling. This is a placeholder.
+        # Example: train a simple model on train_df, then pseudo-label on test_df
+        # For now, skip if no model is available.
+        pass  # To implement: pseudo-labeling logic
+    if getattr(config, 'USE_NOISE_INJECTION', False):
+        logger.info("[Augmentation] Applying noise injection to training features...")
+        # Example: Add noise to X after prepare_data_for_lstm
+        # Will be applied below after X_train is created
+
     look_back_window = config.LOOK_BACK_WINDOW
     X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window)
     if X_test.size == 0:
@@ -120,6 +133,10 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
     from models.model_factory import get_model
     models = []
     X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+    # Optionally inject noise into X_train
+    if getattr(config, 'USE_NOISE_INJECTION', False):
+        logger.info("[Augmentation] Injecting Gaussian noise into X_train...")
+        X_train = augmentation.add_gaussian_noise(X_train, std=getattr(config, 'NOISE_STD', 0.1), random_state=getattr(config, 'RANDOM_SEED', None))
     # LSTM
     # Ensure input_shape is always (timesteps, features) for LSTM
     if X_train[0].ndim == 2:
@@ -362,8 +379,8 @@ def run_meta_optimization(final_df, config):
     from optimization.meta_search import MetaParameterSearch
     from util.log_utils import get_logger
     logger = get_logger()
-    from data.data_handler import DataHandler
-    train_df, test_df = DataHandler.split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
+    import data.split
+    train_df, test_df = data.split.split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
     meta_search = MetaParameterSearch(method=getattr(config, 'META_OPT_METHOD', 'pso'))
     best = meta_search.search(
         var_names,

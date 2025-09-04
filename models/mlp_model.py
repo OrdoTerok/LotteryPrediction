@@ -199,25 +199,44 @@ class MLPModel(BaseModel):
             return type(val)
         self.logger.info(f"[MLP] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}, validation_data shapes={get_val_shapes(validation_data)}")
         cb = callbacks if callbacks is not None else [self.early_stopping_callback]
+        # Always suppress batch logs unless explicitly overridden
+        if 'verbose' not in kwargs:
+            kwargs['verbose'] = 0
         history = self.model.fit(X, y, validation_data=validation_data, epochs=epochs, batch_size=batch_size, callbacks=cb, **kwargs)
         self.logger.info("[MLP] Finished fit.")
         return history
 
     def predict(self, X, **kwargs):
         self.logger.info(f"[MLP] Starting prediction: X shape={X.shape}")
-        # Automatically flatten 3D input to 2D if needed
-        if hasattr(X, 'ndim') and X.ndim == 3:
-            X = X.reshape(X.shape[0], -1)
-        preds = self.model.predict(X, **kwargs)
-        if isinstance(preds, (list, tuple)):
-            pred_shapes = [p.shape for p in preds]
-        else:
-            pred_shapes = preds.shape
-        self.logger.info(f"[MLP] Prediction complete: output shapes={pred_shapes}")
-        return preds
+        try:
+            # Automatically flatten 3D input to 2D if needed
+            if hasattr(X, 'ndim') and X.ndim == 3:
+                X = X.reshape(X.shape[0], -1)
+            preds = self.model.predict(X, **kwargs)
+            if isinstance(preds, (list, tuple)):
+                pred_shapes = [p.shape for p in preds]
+            else:
+                pred_shapes = preds.shape
+            self.logger.info(f"[MLP] Prediction complete: output shapes={pred_shapes}")
+            return preds
+        except Exception as e:
+            self.logger.error(f"[MLP][ERROR] Exception during predict: {e}")
+            return None
 
     def evaluate(self, X, y, batch_size=32, **kwargs):
-        self.logger.info(f"[MLP] Starting evaluation: X shape={X.shape}, y shapes={[arr.shape for arr in y] if isinstance(y, (list, tuple)) else y.shape}")
+        def get_y_shapes(y):
+            if isinstance(y, dict):
+                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                return [arr.shape if hasattr(arr, 'shape') else type(arr) for arr in y]
+            elif hasattr(y, 'shape'):
+                return y.shape
+            else:
+                return type(y)
+        self.logger.info(f"[MLP] Starting evaluation: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        # Remove training-only arguments from kwargs for evaluate
+        for arg in ["epochs", "batch_size", "validation_split", "verbose"]:
+            kwargs.pop(arg, None)
         results = self.model.evaluate(X, y, batch_size=batch_size, **kwargs)
         self.logger.info(f"[MLP] Evaluation complete: results={results}")
         return results

@@ -197,22 +197,41 @@ class RNNModel:
             else:
                 return type(y)
         self.logger.info(f"[RNN] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        # Always suppress batch logs unless explicitly overridden
+        if 'verbose' not in kwargs:
+            kwargs['verbose'] = 0
         history = self.model.fit(X, y, **kwargs)
         self.logger.info("[RNN] Finished fit.")
         return history
 
     def predict(self, X, **kwargs):
         self.logger.info(f"[RNN] Starting prediction: X shape={X.shape}")
-        preds = self.model.predict(X, **kwargs)
-        if isinstance(preds, (list, tuple)):
-            pred_shapes = [p.shape for p in preds]
-        else:
-            pred_shapes = preds.shape
-        self.logger.info(f"[RNN] Prediction complete: output shapes={pred_shapes}")
-        return preds
+        try:
+            preds = self.model.predict(X, **kwargs)
+            if isinstance(preds, (list, tuple)):
+                pred_shapes = [p.shape for p in preds]
+            else:
+                pred_shapes = preds.shape
+            self.logger.info(f"[RNN] Prediction complete: output shapes={pred_shapes}")
+            return preds
+        except Exception as e:
+            self.logger.error(f"[RNN][ERROR] Exception during predict: {e}")
+            return None
 
     def evaluate(self, X, y, **kwargs):
-        self.logger.info(f"[RNN] Starting evaluation: X shape={X.shape}, y shapes={[arr.shape for arr in y] if isinstance(y, (list, tuple)) else y.shape}")
+        # Remove training-only arguments from kwargs for evaluate
+        for arg in ["epochs", "batch_size", "validation_split", "verbose"]:
+            kwargs.pop(arg, None)
+        def get_y_shapes(y):
+            if isinstance(y, dict):
+                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                return [v.shape if hasattr(v, 'shape') else type(v) for v in y]
+            elif hasattr(y, 'shape'):
+                return y.shape
+            else:
+                return type(y)
+        self.logger.info(f"[RNN] Starting evaluation: X shape={X.shape}, y shapes={get_y_shapes(y)}")
         results = self.model.evaluate(X, y, **kwargs)
         self.logger.info(f"[RNN] Evaluation complete: results={results}")
         return results

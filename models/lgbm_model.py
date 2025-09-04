@@ -94,34 +94,38 @@ class LightGBMModel(BaseModel):
         logger = logging.getLogger(__name__)
         logger.info(f"[LGBM] Starting prediction: X shape={X.shape}")
         import pandas as pd
-        # Automatically flatten 3D input to 2D if needed
-        if X.ndim == 3:
-            X = X.reshape(X.shape[0], -1)
-        if feature_names is not None and not isinstance(X, pd.DataFrame):
-            if len(feature_names) == X.shape[1]:
-                X = pd.DataFrame(X, columns=feature_names)
-            else:
-                X = pd.DataFrame(X)
-        preds = []
-        for idx, model in enumerate(self.models_first):
+        try:
+            # Automatically flatten 3D input to 2D if needed
+            if X.ndim == 3:
+                X = X.reshape(X.shape[0], -1)
+            if feature_names is not None and not isinstance(X, pd.DataFrame):
+                if len(feature_names) == X.shape[1]:
+                    X = pd.DataFrame(X, columns=feature_names)
+                else:
+                    X = pd.DataFrame(X)
+            preds = []
+            for idx, model in enumerate(self.models_first):
+                try:
+                    pred = model.predict_proba(X)
+                    preds.append(pred)
+                except Exception as e:
+                    logger.error(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
+                    return None
             try:
-                pred = model.predict_proba(X)
-                preds.append(pred)
+                first_five_pred = np.stack(preds, axis=1)
             except Exception as e:
-                logger.error(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
-                raise
-        try:
-            first_five_pred = np.stack(preds, axis=1)
+                logger.error(f"[ERROR][LGBM] Exception during np.stack for first_five_pred: {e}")
+                return None
+            try:
+                sixth_pred = self.model_sixth.predict_proba(X)[:, np.newaxis, :]
+            except Exception as e:
+                logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
+                return None
+            logger.info(f"[LGBM] Prediction complete: first_five_pred shape={first_five_pred.shape}, sixth_pred shape={sixth_pred.shape}")
+            return first_five_pred, sixth_pred
         except Exception as e:
-            logger.error(f"[ERROR][LGBM] Exception during np.stack for first_five_pred: {e}")
-            raise
-        try:
-            sixth_pred = self.model_sixth.predict_proba(X)[:, np.newaxis, :]
-        except Exception as e:
-            logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
-            raise
-        logger.info(f"[LGBM] Prediction complete: first_five_pred shape={first_five_pred.shape}, sixth_pred shape={sixth_pred.shape}")
-        return first_five_pred, sixth_pred
+            logger.error(f"[LGBM][ERROR] Exception during predict: {e}")
+            return None
 
     def evaluate(self, X, y, feature_names=None, **kwargs):
         import logging
@@ -139,10 +143,10 @@ class LightGBMModel(BaseModel):
         for i in range(self.num_first):
             y_true = y_first[:, i]
             y_pred = first_five_pred[:, i, :]
-            losses.append(log_loss(y_true, y_pred))
+            losses.append(log_loss(y_true, y_pred, labels=np.arange(self.num_first_classes)))
         y_true6 = y_sixth[:, 0]
         y_pred6 = sixth_pred[:, 0, :]
-        losses.append(log_loss(y_true6, y_pred6))
+        losses.append(log_loss(y_true6, y_pred6, labels=np.arange(self.num_sixth_classes)))
         return losses
 
     @staticmethod

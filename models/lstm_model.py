@@ -38,6 +38,10 @@ class LSTMModel:
         def on_epoch_end(self, epoch, logs=None):
             log_str = f"Epoch {epoch+1} end: " + ', '.join([f"{k}: {v:.4f}" for k, v in (logs or {}).items()])
             self.logger.info(log_str)
+        def on_batch_begin(self, batch, logs=None):
+            pass
+        def on_batch_end(self, batch, logs=None):
+            pass
 
     def __init__(self, input_shape, hp=None, use_custom_loss=False, force_low_units=False, force_simple=False,
                  units=None, dropout=None, learning_rate=None, label_smoothing=None, temp_max=None):
@@ -73,19 +77,26 @@ class LSTMModel:
         callbacks = kwargs.get('callbacks', [])
         callbacks = list(callbacks) + [LSTMModel.LoggingCallback(self.logger)]
         kwargs['callbacks'] = callbacks
+        # Always suppress batch logs unless explicitly overridden
+        if 'verbose' not in kwargs:
+            kwargs['verbose'] = 0
         history = self.model.fit(X, y, **kwargs)
         self.logger.info("[LSTM] Finished fit.")
         return history
 
     def predict(self, X, **kwargs):
         self.logger.info(f"[LSTM] Starting prediction: X shape={X.shape}")
-        preds = self.model.predict(X, **kwargs)
-        if isinstance(preds, (list, tuple)):
-            pred_shapes = [p.shape for p in preds]
-        else:
-            pred_shapes = preds.shape
-        self.logger.info(f"[LSTM] Prediction complete: output shapes={pred_shapes}")
-        return preds
+        try:
+            preds = self.model.predict(X, **kwargs)
+            if isinstance(preds, (list, tuple)):
+                pred_shapes = [p.shape for p in preds]
+            else:
+                pred_shapes = preds.shape
+            self.logger.info(f"[LSTM] Prediction complete: output shapes={pred_shapes}")
+            return preds
+        except Exception as e:
+            self.logger.error(f"[LSTM][ERROR] Exception during predict: {e}")
+            return None
 
     def evaluate(self, X, y, **kwargs):
         def get_y_shapes(y):
@@ -315,7 +326,7 @@ class LSTMModel:
         logger.info("\nStarting model training...")
         callback = LSTMModel.LoggingCallback(logger)
         from tensorflow.keras.callbacks import EarlyStopping
-        early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
+        early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=0)
         model.fit(
             X_train_reshaped,
             {'first_five': y_train[0], 'sixth': y_train[1]},
@@ -347,16 +358,32 @@ class LSTMModel:
 
     def predict(self, X, **kwargs):
         self.logger.info(f"[LSTM] Starting prediction: X shape={X.shape}")
-        preds = self.model.predict(X, **kwargs)
-        if isinstance(preds, (list, tuple)):
-            pred_shapes = [p.shape for p in preds]
-        else:
-            pred_shapes = preds.shape
-        self.logger.info(f"[LSTM] Prediction complete: output shapes={pred_shapes}")
-        return preds
+        try:
+            preds = self.model.predict(X, **kwargs)
+            if isinstance(preds, (list, tuple)):
+                pred_shapes = [p.shape for p in preds]
+            else:
+                pred_shapes = preds.shape
+            self.logger.info(f"[LSTM] Prediction complete: output shapes={pred_shapes}")
+            return preds
+        except Exception as e:
+            self.logger.error(f"[LSTM][ERROR] Exception during predict: {e}")
+            return None
 
     def evaluate(self, X, y, **kwargs):
-        self.logger.info(f"[LSTM] Starting evaluation: X shape={X.shape}, y shapes={[arr.shape for arr in y] if isinstance(y, (list, tuple)) else y.shape}")
+        # Remove training-only arguments from kwargs for evaluate
+        for arg in ["epochs", "batch_size", "validation_split", "verbose"]:
+            kwargs.pop(arg, None)
+        def get_y_shapes(y):
+            if isinstance(y, dict):
+                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                return [v.shape if hasattr(v, 'shape') else type(v) for v in y]
+            elif hasattr(y, 'shape'):
+                return y.shape
+            else:
+                return type(y)
+        self.logger.info(f"[LSTM] Starting evaluation: X shape={X.shape}, y shapes={get_y_shapes(y)}")
         results = self.model.evaluate(X, y, **kwargs)
         self.logger.info(f"[LSTM] Evaluation complete: results={results}")
         return results
