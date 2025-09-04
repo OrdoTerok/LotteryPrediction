@@ -1,10 +1,28 @@
+"""
+Particle Swarm Optimization (PSO) for meta-parameter search in LotteryPrediction.
+
+This module implements the PSO algorithm for hyperparameter optimization, including:
+- Particle class for representing candidate solutions
+- Constraint and initialization utilities
+- Fitness evaluation for model training/validation
+- Main PSO optimization loop (particle_swarm_optimize)
+
+Typical usage:
+	from optimization.particle_swarm import particle_swarm_optimize
+	best_params = particle_swarm_optimize(var_names, bounds, final_df, ...)
+
+All PSO-specific logic is contained here.
+"""
 _PSO_RUNNING = False
 
 def check_constraints(var_names, position):
 	"""
-	Returns True if all constraints are satisfied, False otherwise.
-	Add custom constraints here as needed.
-	Example: enforce integer, positivity, or relational constraints.
+	Check if a set of parameter values satisfies all constraints.
+	Args:
+		var_names: List of parameter names.
+		position: List or array of parameter values.
+	Returns:
+		True if all constraints are satisfied, False otherwise.
 	"""
 	# Example: all parameters must be positive
 	# for v in position:
@@ -23,8 +41,13 @@ logger = logging.getLogger(__name__)
 
 def get_valid_initial_value(var_name, low, high):
 	"""
-	Return a valid, meaningful initial value for a parameter.
-	Customize this function for each parameter as needed.
+	Generate a valid initial value for a given parameter.
+	Args:
+		var_name: Name of the parameter.
+		low: Lower bound for the parameter.
+		high: Upper bound for the parameter.
+	Returns:
+		A valid initial value for the parameter, possibly using custom logic.
 	"""
 	# Example: for learning rates, avoid 0 or 1; for units, prefer powers of 2, etc.
 	# You can add custom logic per var_name here.
@@ -43,6 +66,12 @@ def get_valid_initial_value(var_name, low, high):
 
 class Particle:
 	def __init__(self, bounds, var_names):
+		"""
+		Initialize a Particle for PSO.
+		Args:
+			bounds: List of (low, high) tuples for each parameter.
+			var_names: List of parameter names.
+		"""
 		if len(var_names) != len(bounds):
 			raise ValueError(f"Length mismatch: var_names ({len(var_names)}) and bounds ({len(bounds)}) must be the same length.")
 		self.position = np.array([
@@ -55,6 +84,14 @@ class Particle:
 		self.var_names = var_names
 
 	def update_velocity(self, global_best, w=0.5, c1=1.5, c2=1.5):
+		"""
+		Update the particle's velocity based on its own best and the global best.
+		Args:
+			global_best: Global best position found so far.
+			w: Inertia weight.
+			c1: Cognitive coefficient.
+			c2: Social coefficient.
+		"""
 		r1, r2 = np.random.rand(2)
 		self.velocity = (
 			w * self.velocity
@@ -63,6 +100,11 @@ class Particle:
 		)
 
 	def update_position(self, bounds):
+		"""
+		Update the particle's position based on its velocity and bounds.
+		Args:
+			bounds: List of (low, high) tuples for each parameter.
+		"""
 		self.position += self.velocity
 		for i, (low, high) in enumerate(bounds):
 			if i < len(self.position):
@@ -72,11 +114,21 @@ class Particle:
 				pass
 
 	def set_vars(self):
+		"""
+		Set configuration variables dynamically from the particle's position.
+		"""
 		# Set config variables dynamically
 		for i, name in enumerate(self.var_names):
 			setattr(config, name, type(getattr(config, name))(self.position[i]))
 
 	def evaluate(self, fitness_func):
+		"""
+		Evaluate the fitness of the particle's current position.
+		Args:
+			fitness_func: Callable that returns a fitness value.
+		Returns:
+			Fitness value (float).
+		"""
 		# Constraint handling: check before evaluating fitness
 		if not check_constraints(self.var_names, self.position):
 			logger.debug(f"[PSO][DEBUG] Constraint violation for position: {self.position}")
@@ -94,6 +146,14 @@ class Particle:
 		return fitness
 
 def is_data_valid(train_df, test_df):
+	"""
+	Check if the provided train and test DataFrames are valid for optimization.
+	Args:
+		train_df: Training DataFrame.
+		test_df: Testing DataFrame.
+	Returns:
+		True if both DataFrames are valid and non-empty, False otherwise.
+	"""
 	# Check for empty data
 	if train_df is None or test_df is None:
 		logger.debug("[PSO][DEBUG] DataFrame is None.")
@@ -114,6 +174,14 @@ def is_data_valid(train_df, test_df):
 	return True
 
 def fitness_func(train_df, test_df):
+	"""
+	Compute the fitness value for a given train/test split.
+	Args:
+		train_df: Training DataFrame.
+		test_df: Testing DataFrame.
+	Returns:
+		Fitness value (float), lower is better.
+	"""
 	# Data validity check
 	if not is_data_valid(train_df, test_df):
 		logger.warning("[PSO] Data invalid: empty or contains NaN.")
@@ -160,6 +228,18 @@ def fitness_func(train_df, test_df):
 		return 1e6  # Large penalty for error
 
 def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=10, cv=None):
+	"""
+	Run Particle Swarm Optimization (PSO) to find the best hyperparameters.
+	Args:
+		var_names: List of parameter names.
+		bounds: List of (low, high) tuples for each parameter.
+		final_df: Tuple of (train_df, test_df) DataFrames.
+		n_particles: Number of particles in the swarm.
+		n_iter: Number of optimization iterations.
+		cv: Number of cross-validation folds (optional).
+	Returns:
+		List of best parameter values found by PSO.
+	"""
 	global _PSO_RUNNING
 	if _PSO_RUNNING:
 		logger.warning('[PSO][GUARD] Recursive call to particle_swarm_optimize detected! Aborting this call.')
@@ -180,6 +260,14 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 		cv = getattr(config, 'CV_FOLDS', 1)
 
 	def fitness_func_cv(train_df, test_df):
+		"""
+		Compute fitness using cross-validation.
+		Args:
+			train_df: Training DataFrame.
+			test_df: Testing DataFrame.
+		Returns:
+			Mean cross-validated fitness value.
+		"""
 		try:
 			from data.preprocessing import prepare_data_for_lstm
 			import config.config as config
@@ -205,6 +293,14 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 			return 1e6
 
 	def fitness_func_default(train_df, test_df):
+		"""
+		Compute fitness using a single train/test split.
+		Args:
+			train_df: Training DataFrame.
+			test_df: Testing DataFrame.
+		Returns:
+			Fitness value (float).
+		"""
 		try:
 			from data.preprocessing import prepare_data_for_lstm
 			import config.config as config

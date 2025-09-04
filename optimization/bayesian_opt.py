@@ -1,11 +1,19 @@
 
 """
-bayesian_opt.py
-Bayesian optimization for meta-parameter search in LotteryPrediction.
-Uses Optuna for flexible, efficient search.
-Selectable via config.META_OPT_METHOD = 'bayesian'.
-Supports robust evaluation with cross-validation (config.CV_FOLDS).
-Integrates with main workflow for meta-parameter search.
+Bayesian Optimization for meta-parameter search in LotteryPrediction.
+
+This module implements Bayesian optimization using Optuna for hyperparameter search.
+Key features:
+- Flexible search space definition for any set of variables
+- Cross-validation support for robust evaluation
+- Integrates with the main workflow via config and model_factory
+- Main entry point: bayesian_optimize(var_names, bounds, final_df, ...)
+
+Typical usage:
+	from optimization.bayesian_opt import bayesian_optimize
+	best_params = bayesian_optimize(var_names, bounds, final_df, ...)
+
+All Bayesian optimization logic is contained here.
 """
 import optuna # type: ignore
 import numpy as np
@@ -14,7 +22,25 @@ import config.config as config
 
 # Define the search space for meta-parameters
 def bayesian_optimize(var_names, bounds, final_df, n_trials=10, cv=1):
+	"""
+	Run Bayesian optimization to find the best hyperparameters.
+	Args:
+		var_names: List of parameter names.
+		bounds: List of (low, high) tuples for each parameter.
+		final_df: Tuple of (train_df, test_df) DataFrames or a single DataFrame.
+		n_trials: Number of optimization trials.
+		cv: Number of cross-validation folds (default 1).
+	Returns:
+		List of best parameter values found by Bayesian optimization.
+	"""
 	def objective(trial):
+		"""
+		Objective function for Optuna trial.
+		Args:
+			trial: Optuna trial object.
+		Returns:
+			Fitness value (float) to minimize.
+		"""
 		params = []
 		for i, (name, (low, high)) in enumerate(zip(var_names, bounds)):
 			if isinstance(low, int) and isinstance(high, int):
