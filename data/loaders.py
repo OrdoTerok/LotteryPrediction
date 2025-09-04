@@ -1,5 +1,14 @@
-# data/loaders.py
-# Functions for loading raw data from files or APIs.
+
+"""
+data.loaders
+------------
+Functions for loading raw lottery data from CSV files or APIs (e.g., Data.gov, Kaggle).
+Functions:
+    - load_csv: Load a CSV file into a DataFrame.
+    - fetch_data_from_datagov: Fetch and process data from the Data.gov API.
+    - load_data_from_kaggle: Load and process data from a Kaggle CSV file.
+    - get_powerball_data: (if present) Load Powerball data from various sources.
+"""
 
 import pandas as pd
 import requests
@@ -9,9 +18,35 @@ import logging
 logger = logging.getLogger(__name__)
 
 def load_csv(path):
+    """
+    Load a CSV file into a pandas DataFrame.
+
+    Parameters
+    ----------
+    path : str
+        Path to the CSV file.
+
+    Returns
+    -------
+    pd.DataFrame
+        Loaded DataFrame.
+    """
     return pd.read_csv(path)
 
 def fetch_data_from_datagov(api_url):
+    """
+    Fetch and process lottery data from the Data.gov API.
+
+    Parameters
+    ----------
+    api_url : str
+        API endpoint URL for Data.gov.
+
+    Returns
+    -------
+    pd.DataFrame
+        Processed DataFrame with columns ['Draw Date', 'Winning Numbers', 'Multiplier'].
+    """
     logger.info("Fetching data from Data.gov API...")
     try:
         response = requests.get(api_url, timeout=10)
@@ -28,6 +63,19 @@ def fetch_data_from_datagov(api_url):
         return pd.DataFrame()
 
 def load_data_from_kaggle(file_path):
+    """
+    Load and process lottery data from a Kaggle CSV file.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the Kaggle CSV file.
+
+    Returns
+    -------
+    pd.DataFrame
+        Processed DataFrame with columns ['Draw Date', 'Winning Numbers', 'Powerball'].
+    """
     logger.info(f"Attempting to load data from local file: {file_path}")
     if not os.path.exists(file_path):
         logger.error(f"Error: The file '{file_path}' was not found.")
@@ -46,6 +94,21 @@ def load_data_from_kaggle(file_path):
         return pd.DataFrame()
 
 def get_powerball_data(api_url, csv_path):
+    """
+    Get Powerball data, downloading from Data.gov if today is a draw day, otherwise loading from CSV.
+
+    Parameters
+    ----------
+    api_url : str
+        API endpoint URL for Data.gov.
+    csv_path : str
+        Path to the local CSV file.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with Powerball data.
+    """
     today = datetime.datetime.now().date()
     weekday = today.weekday()
     download_today = (weekday == 3) or (weekday == 6)

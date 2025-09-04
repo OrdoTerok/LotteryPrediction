@@ -1,9 +1,21 @@
+"""
+data.analysis
+-------------
+Analysis utilities for lottery datasets, including value range and frequency analysis for each ball.
+Functions:
+    - analyze_value_ranges_per_ball: Print and log statistics for each ball in the dataset.
+"""
 import numpy as np
 import pandas as pd
 
 def analyze_value_ranges_per_ball(df):
     """
-    Print min, max, percentiles, and top frequencies for each ball in the dataset.
+    Print and log min, max, percentiles, and top frequencies for each ball in the dataset.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with a 'Winning Numbers' column containing space-separated numbers.
     """
     winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).tolist()
     balls = np.array(winning_numbers, dtype=int)

@@ -1,3 +1,9 @@
+
+"""
+models.lgbm_model
+-----------------
+LightGBM-based model for lottery prediction. Supports multiclass classification for each ball and cross-validation.
+"""
 import lightgbm as lgb
 import numpy as np
 from models.base_model import BaseModel
@@ -6,7 +12,14 @@ import logging
 class LightGBMModel(BaseModel):
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
-        Perform K-fold cross-validation. Returns list of per-fold evaluation results.
+        Perform K-fold cross-validation.
+        Args:
+            X: Input features.
+            y: Target values.
+            cv: Number of cross-validation folds.
+            **kwargs: Additional arguments for fitting/evaluation.
+        Returns:
+            List of evaluation results for each fold.
         """
         from sklearn.model_selection import KFold
         results = []
@@ -27,6 +40,14 @@ class LightGBMModel(BaseModel):
             logger.info(f"[LGBM][CV] Fold {fold+1} result: {eval_result}")
         return results
     def __init__(self, num_first=5, num_first_classes=69, num_sixth_classes=26, params=None):
+        """
+        Initialize the LightGBMModel.
+        Args:
+            num_first: Number of first balls.
+            num_first_classes: Number of classes for first balls.
+            num_sixth_classes: Number of classes for sixth ball.
+            params: LightGBM parameters dictionary.
+        """
         logger = logging.getLogger(__name__)
         self.num_first = num_first
         self.num_first_classes = num_first_classes
@@ -44,6 +65,13 @@ class LightGBMModel(BaseModel):
         self.model_sixth = lgb.LGBMClassifier(**params6)
 
     def fit(self, X, y, **kwargs):
+        """
+        Fit the LightGBM models to the training data.
+        Args:
+            X: Input features.
+            y: Tuple or list of (y_first, y_sixth) targets.
+            **kwargs: Additional arguments for fitting.
+        """
         logger = logging.getLogger(__name__)
         logger.info(f"[LGBM] Starting fit: X shape={X.shape}, y shapes={[arr.shape for arr in y] if isinstance(y, (list, tuple)) else y.shape}")
         y_first, y_sixth = y

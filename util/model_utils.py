@@ -518,7 +518,7 @@ def ensemble_predict(models, X):
         weighted_sixth = np.tensordot(weights, np.array(preds_sixth), axes=1)
         return weighted_first, weighted_sixth
     elif strategy == 'stacking':
-        from models.nn_meta_learner import NNMetaLearner
+        from meta_learner import NNMetaLearner
         n_samples, n_balls, n_classes = preds_first[0].shape
         stacked_first = np.zeros((n_samples, n_balls, n_classes))
         # Hyperparameter grid for meta-learner

@@ -1,3 +1,9 @@
+
+"""
+models.rnn_model
+---------------
+RNN-based neural network model for lottery prediction. Supports custom loss, KerasTuner integration, and cross-validation.
+"""
 import tensorflow as tf
 from tensorflow.keras import layers, Model
 import logging
@@ -5,7 +11,14 @@ import logging
 class RNNModel:
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
-        Perform K-fold cross-validation. Returns list of per-fold evaluation results.
+        Perform K-fold cross-validation.
+        Args:
+            X: Input features.
+            y: Target values.
+            cv: Number of cross-validation folds.
+            **kwargs: Additional arguments for fitting/evaluation.
+        Returns:
+            List of evaluation results for each fold.
         """
         from sklearn.model_selection import KFold
         results = []
@@ -34,7 +47,18 @@ class RNNModel:
                         use_custom_loss=False):
         """
         Build a simple RNN model for lottery prediction, compatible with ensembling.
-        If hp (KerasTuner HyperParameters) is provided, use it for hyperparameter search.
+        Args:
+            hp: Optional KerasTuner HyperParameters for tuning.
+            input_shape: Shape of the input data.
+            units: Number of RNN units.
+            num_layers: Number of RNN layers.
+            dropout: Dropout rate.
+            use_bidirectional: Whether to use bidirectional RNNs.
+            optimizer: Optimizer type.
+            learning_rate: Learning rate for optimizer.
+            use_custom_loss: Whether to use a custom loss function.
+        Returns:
+            Compiled Keras model.
         """
         if hp is not None:
             units = hp.Choice('rnn_units', [32, 64, 128])

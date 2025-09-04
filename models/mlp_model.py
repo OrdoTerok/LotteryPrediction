@@ -1,3 +1,9 @@
+
+"""
+models.mlp_model
+---------------
+Multilayer Perceptron (MLP) model for lottery prediction. Supports custom loss, KerasTuner integration, and cross-validation.
+"""
 import logging
 import tensorflow as tf
 import numpy as np
@@ -6,16 +12,39 @@ from tensorflow.keras.callbacks import EarlyStopping
 import tensorflow.keras.backend as K
 
 def overcount_penalty(y_true, y_pred):
+    """
+    Compute a penalty for predicting more numbers than present in the true labels.
+    Args:
+        y_true: True labels.
+        y_pred: Predicted labels.
+    Returns:
+        Mean penalty for overcounting.
+    """
     true_counts = tf.reduce_sum(y_true, axis=1)
     pred_counts = tf.reduce_sum(y_pred, axis=1)
     excess = tf.nn.relu(pred_counts - true_counts)
     return tf.reduce_mean(excess)
 
 def entropy_reg(y_pred):
+    """
+    Compute the entropy regularization term for predictions.
+    Args:
+        y_pred: Predicted probabilities.
+    Returns:
+        Mean entropy value.
+    """
     ent = -K.sum(y_pred * K.log(y_pred + 1e-8), axis=-1)
     return K.mean(ent)
 
 def jaccard_loss(y_true, y_pred):
+    """
+    Compute the Jaccard loss between true and predicted labels.
+    Args:
+        y_true: True labels.
+        y_pred: Predicted labels.
+    Returns:
+        Mean Jaccard loss value.
+    """
     y_true_bin = tf.cast(y_true > 0, tf.float32)
     y_pred_bin = tf.cast(y_pred == tf.reduce_max(y_pred, axis=-1, keepdims=True), tf.float32)
     intersection = tf.reduce_sum(y_true_bin * y_pred_bin, axis=[1,2])
@@ -24,6 +53,13 @@ def jaccard_loss(y_true, y_pred):
     return tf.reduce_mean(jaccard)
 
 def duplicate_penalty(y_pred):
+    """
+    Compute a penalty for duplicate predictions in a row.
+    Args:
+        y_pred: Predicted labels.
+    Returns:
+        Mean penalty for duplicate predictions.
+    """
     # Vectorized duplicate penalty: count duplicates in each row
     pred_idx = tf.argmax(y_pred, axis=-1)  # (batch, balls)
     num_balls = tf.shape(pred_idx)[1]
@@ -42,6 +78,14 @@ def duplicate_penalty(y_pred):
     return penalty
 
 def anti_copying_penalty(y_pred, meta_features=None):
+    """
+    Compute a penalty for copying meta features in predictions.
+    Args:
+        y_pred: Predicted labels.
+        meta_features: Meta features to compare against (optional).
+    Returns:
+        Mean penalty for copying meta features.
+    """
     if meta_features is None:
         return 0.0
     pred_idx = tf.argmax(y_pred, axis=-1)
@@ -50,6 +94,13 @@ def anti_copying_penalty(y_pred, meta_features=None):
     return penalty
 
 def diversity_penalty(y_pred):
+    """
+    Compute a penalty for lack of diversity in predictions.
+    Args:
+        y_pred: Predicted labels.
+    Returns:
+        Mean penalty for lack of diversity.
+    """
     pred_idx = tf.argmax(y_pred, axis=-1)
     unique, _, count = tf.unique_with_counts(tf.reshape(pred_idx, [-1]))
     penalty = tf.reduce_sum(tf.cast(count > 1, tf.float32) * (tf.cast(count, tf.float32) - 1)) / tf.cast(tf.size(pred_idx), tf.float32)

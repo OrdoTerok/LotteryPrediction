@@ -1,11 +1,35 @@
-# data/preprocessing.py
-# Functions for data cleaning, feature engineering, and preprocessing.
+
+"""
+data.preprocessing
+------------------
+Functions for data cleaning, feature engineering, and preprocessing for lottery datasets.
+Functions:
+    - combine_and_clean_data: Combine and deduplicate multiple data sources.
+    - save_to_file: Save a DataFrame to CSV.
+    - prepare_data_for_lstm: Prepare data for LSTM model input.
+    - clean_data: Clean and preprocess raw data.
+"""
 
 import pandas as pd
 import numpy as np
 import logging
 
 def combine_and_clean_data(df_datagov, df_kaggle):
+    """
+    Combine and clean two lottery DataFrames (from Data.gov and Kaggle).
+
+    Parameters
+    ----------
+    df_datagov : pd.DataFrame
+        DataFrame from Data.gov.
+    df_kaggle : pd.DataFrame
+        DataFrame from Kaggle.
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined, deduplicated, and sorted DataFrame.
+    """
     import logging
     logger = logging.getLogger(__name__)
     logger.info("Combining datasets...")
@@ -27,6 +51,16 @@ def combine_and_clean_data(df_datagov, df_kaggle):
     return combined_df
 
 def save_to_file(df, file_path="data_sets/base_dataset.csv"):
+    """
+    Save a DataFrame to a CSV file.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to save.
+    file_path : str, optional
+        Path to save the CSV file (default 'data_sets/base_dataset.csv').
+    """
     logger = logging.getLogger(__name__)
     try:
         df.to_csv(file_path, index=False)
@@ -35,6 +69,23 @@ def save_to_file(df, file_path="data_sets/base_dataset.csv"):
         logger.error(f"Error saving DataFrame to CSV: {e}")
 
 def prepare_data_for_lstm(df: pd.DataFrame, look_back: int):
+    """
+    Prepare data for LSTM model input, generating sequences and one-hot targets.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with at least 'Draw Date' and 'Winning Numbers' columns.
+    look_back : int
+        Number of previous draws to use as input sequence.
+
+    Returns
+    -------
+    X : np.ndarray
+        3D array (samples, timesteps, features) for LSTM input.
+    y : tuple
+        Tuple of (first_five, sixth) one-hot encoded targets.
+    """
     import config.config as config
     df = df.sort_values(by='Draw Date')
     winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
@@ -78,6 +129,7 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int):
         # If (samples, features), reshape to (samples, 1, features)
         X_arr = X_arr[:, np.newaxis, :]
     assert X_arr.ndim == 3, f"LSTM input X must be 3D, got shape {X_arr.shape}"
+    return X_arr, (y_first_five_arr, y_sixth_arr)
     return X_arr, (y_first_five_arr, y_sixth_arr)
 # data/preprocessing.py
 # Functions for data cleaning, feature engineering, and preprocessing.

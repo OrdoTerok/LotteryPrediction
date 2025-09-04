@@ -1,5 +1,12 @@
-# data/augmentation.py
-# Pseudo-labeling and noise injection utilities for data augmentation.
+
+"""
+data.augmentation
+-----------------
+Utilities for data augmentation, including pseudo-labeling and noise injection.
+Functions:
+    - add_gaussian_noise: Add Gaussian noise to features.
+    - pseudo_label: Generate pseudo-labels for unlabeled data using model predictions.
+"""
 
 import numpy as np
 import pandas as pd
@@ -9,12 +16,20 @@ logger = logging.getLogger(__name__)
 def add_gaussian_noise(X, std=0.1, random_state=None):
     """
     Add Gaussian noise to features.
-    Args:
-        X (np.ndarray): Input features.
-        std (float): Standard deviation of noise.
-        random_state (int or None): Seed for reproducibility.
-    Returns:
-        np.ndarray: Noisy features.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Input features.
+    std : float, optional
+        Standard deviation of noise (default 0.1).
+    random_state : int or None, optional
+        Seed for reproducibility (default None).
+
+    Returns
+    -------
+    np.ndarray
+        Noisy features with the same shape as X.
     """
     rng = np.random.default_rng(random_state)
     noise = rng.normal(0, std, X.shape)
@@ -23,12 +38,20 @@ def add_gaussian_noise(X, std=0.1, random_state=None):
 def pseudo_label(df, model, threshold=0.9):
     """
     Generate pseudo-labels for unlabeled data using model predictions above a confidence threshold.
-    Args:
-        df (pd.DataFrame): DataFrame with features to pseudo-label.
-        model: Trained model with predict_proba method.
-        threshold (float): Confidence threshold for accepting pseudo-labels.
-    Returns:
-        pd.DataFrame: DataFrame with pseudo-labeled samples appended.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with features to pseudo-label.
+    model : object
+        Trained model with a predict_proba method.
+    threshold : float, optional
+        Confidence threshold for accepting pseudo-labels (default 0.9).
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with pseudo-labeled samples appended.
     """
     X = ... # Extract features from df as needed
     proba = model.predict_proba(X)

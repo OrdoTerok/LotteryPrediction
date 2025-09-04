@@ -1,3 +1,9 @@
+
+"""
+models.lstm_model
+-----------------
+LSTM-based neural network model for lottery prediction. Supports custom loss, KerasTuner integration, and cross-validation.
+"""
 import tensorflow as tf
 import numpy as np
 import keras_tuner as kt
@@ -7,7 +13,14 @@ import logging
 class LSTMModel:
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
-        Perform K-fold cross-validation. Returns list of per-fold evaluation results.
+        Perform K-fold cross-validation.
+        Args:
+            X: Input features.
+            y: Target values.
+            cv: Number of cross-validation folds.
+            **kwargs: Additional arguments for fitting/evaluation.
+        Returns:
+            List of evaluation results for each fold.
         """
         from sklearn.model_selection import KFold
         results = []
@@ -31,20 +44,63 @@ class LSTMModel:
         return results
     class LoggingCallback(tf.keras.callbacks.Callback):
         def __init__(self, logger):
+            """
+            Initialize the LoggingCallback.
+            Args:
+                logger: Logger instance for logging training events.
+            """
             super().__init__()
             self.logger = logger
         def on_epoch_begin(self, epoch, logs=None):
+            """
+            Log the start of an epoch.
+            Args:
+                epoch: Current epoch number.
+                logs: Optional logs dictionary.
+            """
             self.logger.info(f"Epoch {epoch+1} started.")
         def on_epoch_end(self, epoch, logs=None):
+            """
+            Log the end of an epoch and metrics.
+            Args:
+                epoch: Current epoch number.
+                logs: Optional logs dictionary.
+            """
             log_str = f"Epoch {epoch+1} end: " + ', '.join([f"{k}: {v:.4f}" for k, v in (logs or {}).items()])
             self.logger.info(log_str)
         def on_batch_begin(self, batch, logs=None):
+            """
+            Called at the start of a batch. No-op.
+            Args:
+                batch: Batch number.
+                logs: Optional logs dictionary.
+            """
             pass
         def on_batch_end(self, batch, logs=None):
+            """
+            Called at the end of a batch. No-op.
+            Args:
+                batch: Batch number.
+                logs: Optional logs dictionary.
+            """
             pass
 
     def __init__(self, input_shape, hp=None, use_custom_loss=False, force_low_units=False, force_simple=False,
                  units=None, dropout=None, learning_rate=None, label_smoothing=None, temp_max=None):
+        """
+        Initialize the LSTMModel.
+        Args:
+            input_shape: Shape of the input data.
+            hp: Hyperparameters for model tuning.
+            use_custom_loss: Whether to use a custom loss function.
+            force_low_units: Force use of low number of units.
+            force_simple: Use a simple model architecture.
+            units: Number of LSTM units.
+            dropout: Dropout rate.
+            learning_rate: Learning rate for optimizer.
+            label_smoothing: Label smoothing parameter.
+            temp_max: Maximum temperature for softmax.
+        """
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"[LSTM] Creating model with input_shape={input_shape}, use_custom_loss={use_custom_loss}, "
                          f"force_low_units={force_low_units}, force_simple={force_simple}, units={units}, "
