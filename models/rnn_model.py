@@ -72,7 +72,7 @@ class RNNModel:
             opt = tf.keras.optimizers.Nadam(learning_rate)
 
         if use_custom_loss:
-            import config
+            import config.config as config
             from tensorflow.keras import backend as K
             penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
             entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)

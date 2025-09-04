@@ -171,7 +171,7 @@ class LSTMModel:
             optimizer = tf.keras.optimizers.Nadam(learning_rate)
 
         if use_custom_loss:
-            import config
+            import config.config as config
             penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
             entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)
             jaccard_weight = getattr(config, 'JACCARD_LOSS_WEIGHT', 0.0)

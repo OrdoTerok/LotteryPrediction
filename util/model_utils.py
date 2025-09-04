@@ -23,7 +23,7 @@ except ImportError:
     pass
 
 # Local imports
-import config
+import config.config as config
 from data.loaders import fetch_data_from_datagov, load_data_from_kaggle
 from data.preprocessing import combine_and_clean_data, save_to_file, prepare_data_for_lstm
 from data.split import split_dataframe_by_percentage

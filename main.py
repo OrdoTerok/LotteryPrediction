@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 
 # --- Modular Imports ---
 
-import config
+import config.config as config
 from util.model_utils import run_pipeline
 from util.cache import Cache
 from util.log_utils import setup_logging
@@ -23,7 +23,7 @@ import os
 def main():
     # Setup logging and experiment tracking
     log_filename = setup_logging()
-    import config
+    import config.config as config
     if getattr(config, 'DEVELOPMENT_MODE', False):
         import warnings
         warnings.warn("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")

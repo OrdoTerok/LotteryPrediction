@@ -117,7 +117,7 @@ class MLPModel(BaseModel):
         sixth_reshaped = tf.keras.layers.Reshape((1, self.num_sixth_classes))(sixth_dense)
         sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
         model = tf.keras.Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
-        import config
+        import config.config as config
         use_custom_loss = getattr(config, 'MLP_USE_CUSTOM_LOSS', False)
         penalty_weight = getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0)
         entropy_penalty_weight = getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0)

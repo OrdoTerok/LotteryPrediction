@@ -10,7 +10,7 @@ Integrates with main workflow for meta-parameter search.
 import optuna # type: ignore
 import numpy as np
 from util import model_utils
-import config
+import config.config as config
 
 # Define the search space for meta-parameters
 def bayesian_optimize(var_names, bounds, final_df, n_trials=10, cv=1):

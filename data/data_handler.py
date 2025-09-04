@@ -147,7 +147,7 @@ class DataHandler:
                 - y_first_five: (num_samples, 5, 69) one-hot
                 - y_sixth: (num_samples, 1, 26) one-hot
         """
-        import config
+        import config.config as config
         import json
         df = df.sort_values(by='Draw Date')
         num_first = 5

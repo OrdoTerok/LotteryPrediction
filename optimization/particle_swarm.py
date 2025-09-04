@@ -15,7 +15,7 @@ def check_constraints(var_names, position):
 
 import numpy as np
 import copy
-import config
+import config.config as config
 import importlib
 import os
 import logging
@@ -122,7 +122,7 @@ def fitness_func(train_df, test_df):
 	try:
 		# Prepare data for LSTM
 		from data.preprocessing import prepare_data_for_lstm
-		import config
+		import config.config as config
 		look_back_window = getattr(config, 'LOOK_BACK_WINDOW', 10)
 		X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
 		X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window)
@@ -176,13 +176,13 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 
 	# Determine cv folds
 	if cv is None:
-		import config
+		import config.config as config
 		cv = getattr(config, 'CV_FOLDS', 1)
 
 	def fitness_func_cv(train_df, test_df):
 		try:
 			from data.preprocessing import prepare_data_for_lstm
-			import config
+			import config.config as config
 			look_back_window = getattr(config, 'LOOK_BACK_WINDOW', 10)
 			X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
 			model_type = getattr(config, 'MODEL_TYPE', 'lstm')
@@ -207,7 +207,7 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 	def fitness_func_default(train_df, test_df):
 		try:
 			from data.preprocessing import prepare_data_for_lstm
-			import config
+			import config.config as config
 			look_back_window = getattr(config, 'LOOK_BACK_WINDOW', 10)
 			X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
 			X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window)

@@ -35,7 +35,7 @@ def save_to_file(df, file_path="data_sets/base_dataset.csv"):
         logger.error(f"Error saving DataFrame to CSV: {e}")
 
 def prepare_data_for_lstm(df: pd.DataFrame, look_back: int):
-    import config
+    import config.config as config
     df = df.sort_values(by='Draw Date')
     winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
     X = []
