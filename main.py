@@ -8,24 +8,39 @@ warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 # --- Modular Imports ---
-
+import sys
+import argparse
 import config.config as config
-from util.model_utils import run_pipeline
 from core.cache import Cache
 from core.log_utils import setup_logging
-from util.experiment_tracker import ExperimentTracker
-from optimization.meta_search import MetaParameterSearch
+from pipeline.experiment_tracker import ExperimentTracker
 import cProfile
-import pstats
 import datetime
 import os
 
+
 def main():
+    parser = argparse.ArgumentParser(description='LotteryPrediction main entry point.')
+    parser.add_argument('--cli', choices=['train', 'evaluate', 'tune'], help='Run CLI entry point from scripts/.')
+    parser.add_argument('--config', type=str, default='config/config.py', help='Path to config file (for CLI mode)')
+    args, unknown = parser.parse_known_args()
+
+    if args.cli:
+        script_map = {
+            'train': 'scripts/train.py',
+            'evaluate': 'scripts/evaluate.py',
+            'tune': 'scripts/tune.py',
+        }
+        script_path = script_map[args.cli]
+        # Build command to run the script with any extra args
+        cmd = [sys.executable, script_path, '--config', args.config] + unknown
+        os.execv(sys.executable, [sys.executable] + cmd[1:])
+        return
+
+    # Default: run the main pipeline as before
     # Setup logging and experiment tracking
     log_filename = setup_logging()
-    import config.config as config
     if getattr(config, 'DEVELOPMENT_MODE', False):
-        import warnings
         warnings.warn("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")
     tracker = ExperimentTracker()
     cache = Cache()
@@ -41,6 +56,12 @@ def main():
     profiler = cProfile.Profile()
     profiler.enable()
     logger.info("[Pipeline] Running pipeline from Main...")
+    # Import run_pipeline from the correct location
+    try:
+        from pipeline.run_pipeline import run_pipeline
+    except ImportError:
+        logger.error("Could not import run_pipeline from pipeline.run_pipeline. Please check your project structure.")
+        raise
     run_pipeline(config)
     profiler.disable()
     profiler.dump_stats(profile_path)
