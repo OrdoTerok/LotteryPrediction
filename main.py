@@ -11,8 +11,8 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 
 import config.config as config
 from util.model_utils import run_pipeline
-from util.cache import Cache
-from util.log_utils import setup_logging
+from core.cache import Cache
+from core.log_utils import setup_logging
 from util.experiment_tracker import ExperimentTracker
 from optimization.meta_search import MetaParameterSearch
 import cProfile

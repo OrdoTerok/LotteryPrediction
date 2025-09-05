@@ -15,18 +15,18 @@ import numpy as np
 from data.loaders import fetch_data_from_datagov, load_data_from_kaggle
 from data.preprocessing import combine_and_clean_data, save_to_file, prepare_data_for_lstm
 from data.split import split_dataframe_by_percentage
-from util.plot_utils import (
+from visualization.plot_utils import (
     plot_multi_round_ball_distributions,
     plot_multi_round_powerball_distribution
 )
-from util.plot_utils_std import (
+from visualization.plot_utils_std import (
     plot_multi_round_true_std,
     plot_multi_round_pred_std,
     plot_multi_round_kl_divergence
 )
 from pipeline.experiment_tracker import ExperimentTracker
-from util.cache import Cache
-from util.log_utils import get_logger
+from core.cache import Cache
+from core.log_utils import get_logger
 from optimization.meta_search import MetaParameterSearch
 
 def run_pipeline(config, from_iterative_stacking=False, cv=None):

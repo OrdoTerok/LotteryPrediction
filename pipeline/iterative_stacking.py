@@ -5,7 +5,7 @@ This module implements iterative stacking logic for meta-feature integration in 
 It provides the `run_iterative_stacking` function, which performs multiple rounds of stacking and meta-feature updates.
 """
 import numpy as np
-from util.log_utils import get_logger
+from core.log_utils import get_logger
 from pipeline.run_pipeline import run_pipeline
 
 def run_iterative_stacking(train_df, test_df, config, y_true_first_five, y_true_sixth, prev_pred_first_five=None, prev_pred_sixth=None):

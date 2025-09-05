@@ -1,12 +1,5 @@
 """
-DEPRECATED: Moved to core/cache.py
-"""
-
-import os
-import pickle
-...
-"""
-cache.py: In-memory and disk caching utilities for LotteryPrediction.
+In-memory and disk caching utilities for LotteryPrediction.
 """
 import os
 import pickle

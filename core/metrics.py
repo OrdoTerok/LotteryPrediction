@@ -1,10 +1,6 @@
 """
-DEPRECATED: Moved to core/metrics.py
+General metrics and label utilities for LotteryPrediction.
 """
-
-import numpy as np
-from scipy.stats import entropy
-...
 import numpy as np
 from scipy.stats import entropy
 
@@ -18,10 +14,8 @@ def kl_divergence(p, q):
 def kl_to_uniform(p):
     n = p.shape[-1]
     uniform = np.ones((1, n)) / n
-    # Vectorized KL divergence for all rows in p
     p = np.asarray(p, dtype=np.float64)
     uniform = np.broadcast_to(uniform, p.shape)
-    # Use axis=1 to compute KL for each row
     kls = np.sum(np.clip(p, 1e-12, 1) * np.log(np.clip(p, 1e-12, 1) / np.clip(uniform, 1e-12, 1)), axis=1)
     return np.mean(kls)
 
