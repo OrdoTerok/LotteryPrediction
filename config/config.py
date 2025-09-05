@@ -1,19 +1,25 @@
 # --- Anti-copying penalty ---
 # Penalty weight for copying meta-features in predictions (tuned by meta-optimization)
 ANTI_COPY_PENALTY_WEIGHT = 1.0
+
 # --- Probability calibration ---
 # Options: 'none', 'temperature', 'platt', 'isotonic'
 CALIBRATION_METHOD = 'temperature'
+
 # --- Assignment method ---
 # Options: 'optimal' (Hungarian), 'greedy' (legacy uniqueness)
 ASSIGNMENT_METHOD = 'optimal'
+
 # --- Custom loss weights ---
 # Weight for Jaccard loss (set similarity)
 JACCARD_LOSS_WEIGHT = 0.0
+
 # Weight for duplicate penalty (uniqueness enforcement)
 DUPLICATE_PENALTY_WEIGHT = 0.0
+
 # If True, use custom loss (with overcount/entropy penalty) for MLP
 MLP_USE_CUSTOM_LOSS = True
+
 # LightGBM hyperparameters (for meta-optimization)
 LGBM_NUM_LEAVES = 31
 LGBM_LEARNING_RATE = 0.1
@@ -26,6 +32,7 @@ OVERCOUNT_PENALTY_WEIGHT = 0.5
 # --- Overconfidence/entropy penalty ---
 # Penalty weight for low-entropy (overconfident) predictions in the loss
 ENTROPY_PENALTY_WEIGHT = 0.5
+
 # Label smoothing and uniform prior for regularization
 LABEL_SMOOTHING = 0.05
 UNIFORM_MIX_PROB = 0.05
@@ -34,9 +41,11 @@ UNIFORM_MIX_PROB = 0.05
 # Enable/disable pseudo-labeling and noise injection in the pipeline
 USE_PSEUDO_LABELING = False  # Set True to enable pseudo-labeling
 USE_NOISE_INJECTION = False  # Set True to enable noise injection
+
 # Pseudo-labeling thresholds
 PSEUDO_CONFIDENCE_THRESHOLD = 0.7
 PSEUDO_MIN_ENTROPY = 2.5
+
 # Noise injection parameters
 NOISE_STD = 0.1  # Standard deviation for Gaussian noise
 
@@ -83,9 +92,6 @@ TUNER_PROJECT_NAME = 'lstm_lottery'
 # --- Label smoothing and uniform mixing ---
 LABEL_SMOOTHING = 0.0
 UNIFORM_MIX_PROB = 0.0
-# --- Debug: Only run LSTM model for diagnostics ---
-ONLY_LSTM_MODEL = False
-
 
 # --- Early stopping ---
 EARLY_STOPPING_PATIENCE = 3  # PSO meta-param
@@ -93,7 +99,6 @@ EARLY_STOPPING_PATIENCE = 3  # PSO meta-param
 # --- Model complexity ---
 FORCE_LOW_UNITS = True
 FORCE_SIMPLE = True
-
 
 # --- Development/Production mode switch ---
 DEVELOPMENT_MODE = True  # Set to False for final runs

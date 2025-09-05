@@ -39,7 +39,11 @@ def main():
 
     # Default: run the main pipeline as before
     # Setup logging and experiment tracking
-    log_filename = setup_logging()
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    log_filename = os.path.join(logs_dir, f'log_{timestamp}.rtf')
+    setup_logging(log_filename)
     if getattr(config, 'DEVELOPMENT_MODE', False):
         warnings.warn("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")
     tracker = ExperimentTracker()
@@ -48,11 +52,10 @@ def main():
     # Orchestrate pipeline with profiling
     import logging
     logger = logging.getLogger(__name__)
+    profs_dir = os.path.join(os.path.dirname(__file__), 'profiles')
+    os.makedirs(profs_dir, exist_ok=True)
     logger.info("[Pipeline] Starting LotteryPrediction modular pipeline...")
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    profile_dir = os.path.join(os.path.dirname(__file__), 'logs')
-    os.makedirs(profile_dir, exist_ok=True)
-    profile_path = os.path.join(profile_dir, f'profile_{timestamp}.prof')
+    profile_path = os.path.join(profs_dir, f'profile_{timestamp}.prof')
     profiler = cProfile.Profile()
     profiler.enable()
     logger.info("[Pipeline] Running pipeline from Main...")
@@ -65,7 +68,7 @@ def main():
     run_pipeline(config)
     profiler.disable()
     profiler.dump_stats(profile_path)
-    logger.info(f"[Pipeline] Profiling complete. Profile saved to {profile_path}")
+    logger.info(f"[Pipeline] Profiling complete.")
     logger.info("[Pipeline] Pipeline complete.")
 
 if __name__ == "__main__":

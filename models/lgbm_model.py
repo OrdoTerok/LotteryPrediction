@@ -1,3 +1,25 @@
+class LightGBMModel(BaseModel):
+
+    def kl_to_uniform_probs(self, probs):
+        """
+        Compute KL divergence to uniform for predicted probabilities.
+        Args:
+            probs: np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+        Returns:
+            float: mean KL divergence to uniform
+        """
+        from util.metrics import kl_to_uniform
+        if probs.ndim == 3:
+            return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+        return float(kl_to_uniform(probs))
+    @staticmethod
+    def tune_with_kerastuner(tuner, *args, **kwargs):
+        """
+        Run KerasTuner search with console output suppressed.
+        """
+        from core.log_utils import suppress_console
+        suppress_console()
+        return tuner.search(*args, **kwargs)
 
 """
 models.lgbm_model
@@ -175,7 +197,11 @@ class LightGBMModel(BaseModel):
         y_true6 = y_sixth[:, 0]
         y_pred6 = sixth_pred[:, 0, :]
         losses.append(log_loss(y_true6, y_pred6, labels=np.arange(self.num_sixth_classes)))
-        return losses
+        # Stack all probs for KL-to-uniform
+        probs = np.concatenate([first_five_pred, sixth_pred], axis=1)
+        kl_uniform = self.kl_to_uniform_probs(probs)
+        logger.info(f"[LGBM] Evaluation complete: losses={losses}, KL-to-uniform={kl_uniform:.4f}")
+        return {"losses": losses, "kl_to_uniform": kl_uniform}
 
     @staticmethod
     def fit_models(models_first, model_sixth, X, y):

@@ -1,3 +1,24 @@
+class MLPModel(BaseModel):
+    def kl_to_uniform_probs(self, probs):
+        """
+        Compute KL divergence to uniform for predicted probabilities.
+        Args:
+            probs: np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+        Returns:
+            float: mean KL divergence to uniform
+        """
+        from util.metrics import kl_to_uniform
+        if probs.ndim == 3:
+            return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+        return float(kl_to_uniform(probs))
+    @staticmethod
+    def tune_with_kerastuner(tuner, *args, **kwargs):
+        """
+        Run KerasTuner search with console output suppressed.
+        """
+        from core.log_utils import suppress_console
+        suppress_console()
+        return tuner.search(*args, **kwargs)
 
 """
 models.mlp_model
@@ -163,10 +184,19 @@ class MLPModel(BaseModel):
         x = tf.keras.layers.Flatten()(x)
         first_five_dense = tf.keras.layers.Dense(self.num_first * self.num_first_classes)(x)
         first_five_reshaped = tf.keras.layers.Reshape((self.num_first, self.num_first_classes))(first_five_dense)
-        first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
+        temp_max = getattr(self, 'temp_max', None)
+        if temp_max is not None and temp_max > 0.0:
+            first_five_scaled = tf.keras.layers.Lambda(lambda z: z / temp_max)(first_five_reshaped)
+            first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_scaled)
+        else:
+            first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
         sixth_dense = tf.keras.layers.Dense(self.num_sixth_classes)(x)
         sixth_reshaped = tf.keras.layers.Reshape((1, self.num_sixth_classes))(sixth_dense)
-        sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
+        if temp_max is not None and temp_max > 0.0:
+            sixth_scaled = tf.keras.layers.Lambda(lambda z: z / temp_max)(sixth_reshaped)
+            sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_scaled)
+        else:
+            sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
         model = tf.keras.Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
         import config.config as config
         use_custom_loss = getattr(config, 'MLP_USE_CUSTOM_LOSS', False)
@@ -249,6 +279,44 @@ class MLPModel(BaseModel):
                 return (x_val.shape if hasattr(x_val, 'shape') else type(x_val), get_y_shapes(y_val))
             return type(val)
         self.logger.info(f"[MLP] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}, validation_data shapes={get_val_shapes(validation_data)}")
+        # Apply label smoothing if set
+        label_smoothing = getattr(self, 'label_smoothing', None)
+        if label_smoothing is not None and label_smoothing > 0.0:
+            from util.metrics import smooth_labels
+            if isinstance(y, dict):
+                y = {k: smooth_labels(v, label_smoothing) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y = [smooth_labels(v, label_smoothing) for v in y]
+            else:
+                y = smooth_labels(y, label_smoothing)
+            if validation_data is not None and isinstance(validation_data, tuple) and len(validation_data) == 2:
+                x_val, y_val = validation_data
+                if isinstance(y_val, dict):
+                    y_val = {k: smooth_labels(v, label_smoothing) for k, v in y_val.items()}
+                elif isinstance(y_val, (list, tuple)):
+                    y_val = [smooth_labels(v, label_smoothing) for v in y_val]
+                else:
+                    y_val = smooth_labels(y_val, label_smoothing)
+                validation_data = (x_val, y_val)
+        # Apply mix_uniform if set
+        mix_uniform_prob = getattr(self, 'mix_uniform_prob', None)
+        if mix_uniform_prob is not None and mix_uniform_prob > 0.0:
+            from util.metrics import mix_uniform
+            if isinstance(y, dict):
+                y = {k: mix_uniform(v, mix_uniform_prob) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y = [mix_uniform(v, mix_uniform_prob) for v in y]
+            else:
+                y = mix_uniform(y, mix_uniform_prob)
+            if validation_data is not None and isinstance(validation_data, tuple) and len(validation_data) == 2:
+                x_val, y_val = validation_data
+                if isinstance(y_val, dict):
+                    y_val = {k: mix_uniform(v, mix_uniform_prob) for k, v in y_val.items()}
+                elif isinstance(y_val, (list, tuple)):
+                    y_val = [mix_uniform(v, mix_uniform_prob) for v in y_val]
+                else:
+                    y_val = mix_uniform(y_val, mix_uniform_prob)
+                validation_data = (x_val, y_val)
         cb = callbacks if callbacks is not None else [self.early_stopping_callback]
         # Always suppress batch logs unless explicitly overridden
         if 'verbose' not in kwargs:
@@ -289,6 +357,8 @@ class MLPModel(BaseModel):
         for arg in ["epochs", "batch_size", "validation_split", "verbose"]:
             kwargs.pop(arg, None)
         results = self.model.evaluate(X, y, batch_size=batch_size, **kwargs)
-        self.logger.info(f"[MLP] Evaluation complete: results={results}")
-        return results
+        probs = self.model.predict(X)
+        kl_uniform = self.kl_to_uniform_probs(probs)
+        self.logger.info(f"[MLP] Evaluation complete: results={results}, KL-to-uniform={kl_uniform:.4f}")
+        return {"results": results, "kl_to_uniform": kl_uniform}
 

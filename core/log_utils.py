@@ -48,13 +48,14 @@ def setup_logging(log_filename=None):
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+    # Remove all handlers first (to avoid duplicate logs)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
     if log_filename:
         fh = logging.FileHandler(log_filename)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
-    ch = logging.StreamHandler()
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    # Do NOT add StreamHandler (no console output)
     return logger
 
 def get_logger():

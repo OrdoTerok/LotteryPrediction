@@ -1,3 +1,25 @@
+def kl_to_uniform_probs(self, probs):
+    """
+    Compute KL divergence to uniform for predicted probabilities.
+    Args:
+        probs: np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+    Returns:
+       float: mean KL divergence to uniform
+    """
+    from util.metrics import kl_to_uniform
+    import numpy as np
+    if probs.ndim == 3:
+        return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+    return float(kl_to_uniform(probs))
+
+@staticmethod
+def tune_with_kerastuner(tuner, *args, **kwargs):
+    """
+    Run KerasTuner search with console output suppressed.
+    """
+    from core.log_utils import suppress_console
+    suppress_console()
+    return tuner.search(*args, **kwargs)
 
 """
 models.rnn_model
@@ -44,7 +66,7 @@ class RNNModel:
     def build_rnn_model(hp=None, input_shape=(10, 6),
                         units=64, num_layers=1, dropout=0.2,
                         use_bidirectional=False, optimizer='adam', learning_rate=1e-3,
-                        use_custom_loss=False):
+                        use_custom_loss=False, temp_max=None):
         """
         Build a simple RNN model for lottery prediction, compatible with ensembling.
         Args:
@@ -80,11 +102,19 @@ class RNNModel:
                 x = rnn_layer(x)
             x = layers.Dropout(max(dropout, 0.5))(x)
         first_five_dense = layers.Dense(5 * 69)(x)
-        first_five_softmax = layers.Reshape((5, 69))(first_five_dense)
-        first_five_softmax = layers.Softmax(axis=-1, name='first_five')(first_five_softmax)
+        first_five_reshaped = layers.Reshape((5, 69))(first_five_dense)
+        if temp_max is not None and temp_max > 0.0:
+            first_five_scaled = layers.Lambda(lambda z: z / temp_max)(first_five_reshaped)
+            first_five_softmax = layers.Softmax(axis=-1, name='first_five')(first_five_scaled)
+        else:
+            first_five_softmax = layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
         sixth_dense = layers.Dense(26)(x)
         sixth_reshape = layers.Reshape((1, 26))(sixth_dense)
-        sixth_softmax = layers.Softmax(axis=-1, name='sixth')(sixth_reshape)
+        if temp_max is not None and temp_max > 0.0:
+            sixth_scaled = layers.Lambda(lambda z: z / temp_max)(sixth_reshape)
+            sixth_softmax = layers.Softmax(axis=-1, name='sixth')(sixth_scaled)
+        else:
+            sixth_softmax = layers.Softmax(axis=-1, name='sixth')(sixth_reshape)
         model = Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
         from tensorflow.keras.callbacks import EarlyStopping
         model.early_stopping_callback = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
@@ -206,8 +236,9 @@ class RNNModel:
 
     def __init__(self, input_shape, hp=None, use_custom_loss=False, units=64, num_layers=1, dropout=0.2, use_bidirectional=False, optimizer='adam', learning_rate=1e-3, label_smoothing=None, temp_max=None):
         self.logger = logging.getLogger(__name__)
+        self.temp_max = temp_max
         self.logger.info(f"[RNN] Creating model with input_shape={input_shape}, hp={hp}, use_custom_loss={use_custom_loss}, units={units}, num_layers={num_layers}, dropout={dropout}, use_bidirectional={use_bidirectional}, optimizer={optimizer}, learning_rate={learning_rate}, label_smoothing={label_smoothing}, temp_max={temp_max}")
-        self.model = self.build_rnn_model(hp, input_shape, units, num_layers, dropout, use_bidirectional, optimizer, learning_rate, use_custom_loss)
+        self.model = self.build_rnn_model(hp, input_shape, units, num_layers, dropout, use_bidirectional, optimizer, learning_rate, use_custom_loss, temp_max=temp_max)
         self.logger.info("[RNN] Model created.")
 
     def fit(self, X, y, **kwargs):
@@ -221,6 +252,26 @@ class RNNModel:
             else:
                 return type(y)
         self.logger.info(f"[RNN] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        # Apply label smoothing if set
+        label_smoothing = getattr(self, 'label_smoothing', None)
+        if label_smoothing is not None and label_smoothing > 0.0:
+            from util.metrics import smooth_labels
+            if isinstance(y, dict):
+                y = {k: smooth_labels(v, label_smoothing) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y = [smooth_labels(v, label_smoothing) for v in y]
+            else:
+                y = smooth_labels(y, label_smoothing)
+        # Apply mix_uniform if set
+        mix_uniform_prob = getattr(self, 'mix_uniform_prob', None)
+        if mix_uniform_prob is not None and mix_uniform_prob > 0.0:
+            from util.metrics import mix_uniform
+            if isinstance(y, dict):
+                y = {k: mix_uniform(v, mix_uniform_prob) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y = [mix_uniform(v, mix_uniform_prob) for v in y]
+            else:
+                y = mix_uniform(y, mix_uniform_prob)
         # Always suppress batch logs unless explicitly overridden
         if 'verbose' not in kwargs:
             kwargs['verbose'] = 0
@@ -257,5 +308,7 @@ class RNNModel:
                 return type(y)
         self.logger.info(f"[RNN] Starting evaluation: X shape={X.shape}, y shapes={get_y_shapes(y)}")
         results = self.model.evaluate(X, y, **kwargs)
-        self.logger.info(f"[RNN] Evaluation complete: results={results}")
-        return results
+        probs = self.model.predict(X)
+        kl_uniform = self.kl_to_uniform_probs(probs)
+        self.logger.info(f"[RNN] Evaluation complete: results={results}, KL-to-uniform={kl_uniform:.4f}")
+        return {"results": results, "kl_to_uniform": kl_uniform}

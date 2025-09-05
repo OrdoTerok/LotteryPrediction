@@ -11,6 +11,27 @@ from tensorflow.keras import backend as K
 import logging
 
 class LSTMModel:
+    def kl_to_uniform_probs(self, probs):
+        """
+        Compute KL divergence to uniform for predicted probabilities.
+        Args:
+            probs: np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+        Returns:
+            float: mean KL divergence to uniform
+        """
+        from util.metrics import kl_to_uniform
+        if probs.ndim == 3:
+            # For multi-ball, average over balls
+            return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+        return float(kl_to_uniform(probs))
+    @staticmethod
+    def tune_with_kerastuner(tuner, *args, **kwargs):
+        """
+        Run KerasTuner search with console output suppressed.
+        """
+        from core.log_utils import suppress_console
+        suppress_console()
+        return tuner.search(*args, **kwargs)
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
         Perform K-fold cross-validation.
@@ -51,14 +72,6 @@ class LSTMModel:
             """
             super().__init__()
             self.logger = logger
-        def on_epoch_begin(self, epoch, logs=None):
-            """
-            Log the start of an epoch.
-            Args:
-                epoch: Current epoch number.
-                logs: Optional logs dictionary.
-            """
-            self.logger.info(f"Epoch {epoch+1} started.")
         def on_epoch_end(self, epoch, logs=None):
             """
             Log the end of an epoch and metrics.
@@ -68,22 +81,6 @@ class LSTMModel:
             """
             log_str = f"Epoch {epoch+1} end: " + ', '.join([f"{k}: {v:.4f}" for k, v in (logs or {}).items()])
             self.logger.info(log_str)
-        def on_batch_begin(self, batch, logs=None):
-            """
-            Called at the start of a batch. No-op.
-            Args:
-                batch: Batch number.
-                logs: Optional logs dictionary.
-            """
-            pass
-        def on_batch_end(self, batch, logs=None):
-            """
-            Called at the end of a batch. No-op.
-            Args:
-                batch: Batch number.
-                logs: Optional logs dictionary.
-            """
-            pass
 
     def __init__(self, input_shape, hp=None, use_custom_loss=False, force_low_units=False, force_simple=False,
                  units=None, dropout=None, learning_rate=None, label_smoothing=None, temp_max=None):
@@ -105,6 +102,7 @@ class LSTMModel:
         self.logger.info(f"[LSTM] Creating model with input_shape={input_shape}, use_custom_loss={use_custom_loss}, "
                          f"force_low_units={force_low_units}, force_simple={force_simple}, units={units}, "
                          f"dropout={dropout}, learning_rate={learning_rate}, label_smoothing={label_smoothing}, temp_max={temp_max}")
+        self.temp_max = temp_max
         self.model = self.build_lstm_model(
             hp or kt.HyperParameters(),
             input_shape,
@@ -130,6 +128,29 @@ class LSTMModel:
             else:
                 return type(y)
         self.logger.info(f"[LSTM] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        # Apply label smoothing if set
+        if hasattr(self, 'model') and hasattr(self, 'model').__self__:
+            label_smoothing = getattr(self.model.__self__, 'label_smoothing', None)
+        else:
+            label_smoothing = getattr(self, 'label_smoothing', None)
+        if label_smoothing is not None and label_smoothing > 0.0:
+            from util.metrics import smooth_labels
+            if isinstance(y, dict):
+                y = {k: smooth_labels(v, label_smoothing) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y = [smooth_labels(v, label_smoothing) for v in y]
+            else:
+                y = smooth_labels(y, label_smoothing)
+        # Apply mix_uniform if set
+        mix_uniform_prob = getattr(self, 'mix_uniform_prob', None)
+        if mix_uniform_prob is not None and mix_uniform_prob > 0.0:
+            from util.metrics import mix_uniform
+            if isinstance(y, dict):
+                y = {k: mix_uniform(v, mix_uniform_prob) for k, v in y.items()}
+            elif isinstance(y, (list, tuple)):
+                y = [mix_uniform(v, mix_uniform_prob) for v in y]
+            else:
+                y = mix_uniform(y, mix_uniform_prob)
         callbacks = kwargs.get('callbacks', [])
         callbacks = list(callbacks) + [LSTMModel.LoggingCallback(self.logger)]
         kwargs['callbacks'] = callbacks
@@ -215,10 +236,19 @@ class LSTMModel:
             return penalty
         first_five_dense = tf.keras.layers.Dense(num_first * num_first_classes)(x)
         first_five_reshaped = tf.keras.layers.Reshape((num_first, num_first_classes))(first_five_dense)
-        first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
+        # Temperature scaling for softmax
+        if temp_max is not None and temp_max > 0.0:
+            first_five_scaled = tf.keras.layers.Lambda(lambda z: z / temp_max)(first_five_reshaped)
+            first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_scaled)
+        else:
+            first_five_softmax = tf.keras.layers.Softmax(axis=-1, name='first_five')(first_five_reshaped)
         sixth_dense = tf.keras.layers.Dense(num_sixth_classes)(x)
         sixth_reshaped = tf.keras.layers.Reshape((1, num_sixth_classes))(sixth_dense)
-        sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
+        if temp_max is not None and temp_max > 0.0:
+            sixth_scaled = tf.keras.layers.Lambda(lambda z: z / temp_max)(sixth_reshaped)
+            sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_scaled)
+        else:
+            sixth_softmax = tf.keras.layers.Softmax(axis=-1, name='sixth')(sixth_reshaped)
         model = tf.keras.Model(inputs=inputs, outputs=[first_five_softmax, sixth_softmax])
         try:
             batch_size = hp.Choice('batch_size', [16, 32, 64])
@@ -441,5 +471,8 @@ class LSTMModel:
                 return type(y)
         self.logger.info(f"[LSTM] Starting evaluation: X shape={X.shape}, y shapes={get_y_shapes(y)}")
         results = self.model.evaluate(X, y, **kwargs)
-        self.logger.info(f"[LSTM] Evaluation complete: results={results}")
-        return results
+        # Compute KL to uniform for predictions
+        probs = self.model.predict(X)
+        kl_uniform = self.kl_to_uniform_probs(probs)
+        self.logger.info(f"[LSTM] Evaluation complete: results={results}, KL-to-uniform={kl_uniform:.4f}")
+        return {"results": results, "kl_to_uniform": kl_uniform}
