@@ -278,7 +278,23 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 			input_shape = X_train.shape[1:]
 			model = get_model(model_type, input_shape=input_shape)
 			cv_results = model.cross_validate(X_train, y_train, cv=cv)
-			if isinstance(cv_results[0], (list, tuple, np.ndarray)):
+			# If results are dicts, extract the main loss (first value in 'results' or a specific key)
+			if isinstance(cv_results[0], dict):
+				# Try to extract the first value from 'results' key if present
+				losses = []
+				for r in cv_results:
+					if 'results' in r:
+						val = r['results']
+						# If 'results' is a list/tuple/array, take the first value
+						if isinstance(val, (list, tuple, np.ndarray)):
+							losses.append(val[0])
+						else:
+							losses.append(val)
+					else:
+						# Fallback: try to use the first value in the dict
+						losses.append(list(r.values())[0])
+				total_loss = float(np.mean(losses))
+			elif isinstance(cv_results[0], (list, tuple, np.ndarray)):
 				total_loss = float(np.mean([r[0] for r in cv_results]))
 			else:
 				total_loss = float(np.mean(cv_results))

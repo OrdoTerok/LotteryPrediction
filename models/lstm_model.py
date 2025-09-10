@@ -15,15 +15,23 @@ class LSTMModel:
         """
         Compute KL divergence to uniform for predicted probabilities.
         Args:
-            probs: np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+            probs: np.ndarray or list of np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
         Returns:
             float: mean KL divergence to uniform
         """
         from util.metrics import kl_to_uniform
-        if probs.ndim == 3:
-            # For multi-ball, average over balls
-            return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
-        return float(kl_to_uniform(probs))
+        import numpy as np
+        # If probs is a list (multi-output), compute KL for each and average
+        if isinstance(probs, (list, tuple)):
+            return float(np.mean([self.kl_to_uniform_probs(p) for p in probs]))
+        # If probs is a numpy array
+        if hasattr(probs, 'ndim'):
+            if probs.ndim == 3:
+                # For multi-ball, average over balls
+                return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+            return float(kl_to_uniform(probs))
+        # Fallback: cannot compute
+        raise ValueError(f"Unsupported type for probs in kl_to_uniform_probs: {type(probs)}")
     @staticmethod
     def tune_with_kerastuner(tuner, *args, **kwargs):
         """

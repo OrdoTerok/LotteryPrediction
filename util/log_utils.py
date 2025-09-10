@@ -2,11 +2,8 @@
 DEPRECATED: Moved to core/log_utils.py
 """
 
-from .log_utils import suppress_console
 ...
 
-from .log_utils import suppress_console
-suppress_console()
 import logging
 import datetime
 

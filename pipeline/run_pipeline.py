@@ -100,6 +100,11 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         logger.error("Not enough data to create test sequences. Exiting.")
         tracker.end_run()
         return float('inf')
+    # Check y_test structure
+    if not (isinstance(y_test, (list, tuple)) and len(y_test) >= 2):
+        logger.error(f"y_test is not a tuple/list with at least two elements. Got type: {type(y_test)}, value: {y_test}")
+        tracker.end_run()
+        return float('inf')
     y_true_first_five = np.argmax(y_test[0], axis=-1) + 1
     y_true_sixth = np.argmax(y_test[1], axis=-1) + 1
     logger.info("[Pipeline] Running Meta Optimization")
@@ -250,6 +255,90 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         logger.info(f"Saved best prediction to {history_path}")
     except Exception as e:
         logger.error(f"Failed to save best prediction to {history_path}: {e}")
+
+    # Utility to plot and log artifact
+    def log_plot_and_artifact(plot_func, plot_args, artifact_path):
+        plot_func(**plot_args)
+        if os.path.exists(artifact_path):
+            tracker.log_artifact(artifact_path)
+
+    # Prepare data for multi-round plots
+    rounds_first_five = [final_pred_first_five]  # Add more rounds if available
+    rounds_sixth = [final_pred_sixth]            # Add more rounds if available
+    round_labels = ['Final']
+    # Use previous predictions if available
+    def valid_prev_pred(pred):
+        return pred is not None and hasattr(pred, 'ndim') and pred.ndim >= 2
+    prev_pred_first_five = prev_pred_first_five if valid_prev_pred(prev_pred_first_five) else None
+    prev_pred_sixth = prev_pred_sixth if valid_prev_pred(prev_pred_sixth) else None
+
+    # Log and plot artifacts
+    if rounds_first_five:
+        log_plot_and_artifact(
+            plot_multi_round_ball_distributions,
+            dict(
+                y_true=y_true_first_five,
+                rounds_pred_list=rounds_first_five,
+                prev_pred=prev_pred_first_five,
+                num_balls=5,
+                n_classes=69,
+                title_prefix='Ball',
+                round_labels=round_labels,
+                prev_label='Previous'
+            ),
+            'multi_round_ball_distributions.png'
+        )
+    if rounds_sixth:
+        log_plot_and_artifact(
+            plot_multi_round_powerball_distribution,
+            dict(
+                y_true=y_true_sixth,
+                rounds_pred_list=rounds_sixth,
+                prev_pred=prev_pred_sixth,
+                n_classes=26,
+                title='Powerball (6th Ball) Distribution',
+                round_labels=round_labels,
+                prev_label='Previous'
+            ),
+            'multi_round_powerball_distribution.png'
+        )
+        log_plot_and_artifact(
+            plot_multi_round_true_std,
+            dict(
+                y_true=y_true_first_five,
+                rounds_pred_list=rounds_first_five,
+                prev_pred=prev_pred_first_five,
+                num_balls=5,
+                round_labels=round_labels,
+                prev_label='Previous'
+            ),
+            'multi_round_true_std.png'
+        )
+        log_plot_and_artifact(
+            plot_multi_round_pred_std,
+            dict(
+                y_true=y_true_first_five,
+                rounds_pred_list=rounds_first_five,
+                prev_pred=prev_pred_first_five,
+                num_balls=5,
+                round_labels=round_labels,
+                prev_label='Previous'
+            ),
+            'multi_round_pred_std.png'
+        )
+        log_plot_and_artifact(
+            plot_multi_round_kl_divergence,
+            dict(
+                y_true=y_true_first_five,
+                rounds_pred_list=rounds_first_five,
+                prev_pred=prev_pred_first_five,
+                num_balls=5,
+                n_classes=69,
+                round_labels=round_labels,
+                prev_label='Previous'
+            ),
+            'multi_round_kl_divergence.png'
+        )
 
 def run_meta_optimization(final_df, config):
     """

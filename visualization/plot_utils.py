@@ -76,7 +76,10 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
     palette = plt.get_cmap('tab10')
     for i in range(num_balls):
         logger.info(f"[PLOT DIAG] Ball {i+1} y_true (first 5): %s", y_true[:5, i])
-        if prev_pred is not None:
+        prev_pred_valid = prev_pred is not None and hasattr(prev_pred, 'ndim') and prev_pred.ndim >= 2
+        if prev_pred is not None and not prev_pred_valid:
+            logger.warning(f"[PLOT DIAG] prev_pred is not valid for indexing: type={type(prev_pred)}, ndim={getattr(prev_pred, 'ndim', None)}")
+        if prev_pred_valid:
             logger.info(f"[PLOT DIAG] Ball {i+1} prev_pred (first 5): %s", prev_pred[:5, i])
         for idx, y_pred in enumerate(rounds_pred_list):
             logger.info(f"[PLOT DIAG] Ball {i+1} round {idx+1} y_pred (first 5): %s", y_pred[:5, i])
@@ -87,7 +90,7 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
         true_counts = np.bincount(y_true[:, i] - 1, minlength=n_classes)
         plt.bar(x + offsets[0], true_counts, width=width, color='blue', label='True', align='center')
         idx_offset = 1
-        if prev_pred is not None:
+        if prev_pred_valid:
             prev_counts = np.bincount(prev_pred[:, i].astype(int) - 1, minlength=n_classes)
             plt.bar(x + offsets[1], prev_counts, width=width, color='black', label=prev_label, align='center')
             idx_offset += 1
