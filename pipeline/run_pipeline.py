@@ -175,9 +175,17 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         try:
             if model_type == 'lgbm':
                 model = get_model(model_type)
+                X_train_lgbm, y_train_lgbm = prepare_data_for_lstm(train_df, look_back=look_back_window)
+                if X_train_lgbm.ndim == 3:
+                    X_train = X_train_lgbm.reshape(X_train_lgbm.shape[0], -1)
+                else:
+                    X_train = X_train_lgbm
+                y_train = y_train_lgbm
             else:
                 model = get_model(model_type, input_shape=X_test.shape[1:])
-            X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+                X_train_seq, y_train_seq = prepare_data_for_lstm(train_df, look_back=look_back_window)
+                X_train = X_train_seq
+                y_train = y_train_seq
             if hasattr(model, 'cross_validate'):
                 from sklearn.model_selection import KFold
                 kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
@@ -187,6 +195,7 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
                 fold_labels = []
                 for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_train)):
                     # Train model on this fold
+                    # For LGBM, X_train is 2D; for others, X_train is 3D
                     X_tr, X_val = X_train[train_idx], X_train[val_idx]
                     if isinstance(y_train, dict):
                         y_tr = {k: v[train_idx] for k, v in y_train.items()}
@@ -247,8 +256,17 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
             results[model_type] = eval_result
             trained_models.append(model)
             # Save model predictions for best-match selection
-            pred_first = np.argmax(model.model.predict(X_test, verbose=0)[0], axis=-1) + 1
-            pred_sixth = np.argmax(model.model.predict(X_test, verbose=0)[1], axis=-1) + 1
+            if model_type == 'lgbm':
+                preds = model.predict(X_test)
+                if isinstance(preds, (list, tuple)) and len(preds) == 2:
+                    pred_first = preds[0] + 1
+                    pred_sixth = preds[1] + 1
+                else:
+                    pred_first = preds + 1
+                    pred_sixth = None
+            else:
+                pred_first = np.argmax(model.model.predict(X_test, verbose=0)[0], axis=-1) + 1
+                pred_sixth = np.argmax(model.model.predict(X_test, verbose=0)[1], axis=-1) + 1
             all_predictions.append({
                 'source': model_type,
                 'first_five': pred_first,
@@ -311,42 +329,59 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         logger.error(f"[Pipeline] Error during ensembling: {e}")
 
     # Calibration method selection and application
-    from ensemble.calibration import TemperatureScaler, PlattScaler, IsotonicCalibrator
-    calibration_method = getattr(config, 'CALIBRATION_METHOD', 'none').lower()
-    if calibration_method != 'none':
-        logger.info(f"[Pipeline] Applying calibration method: {calibration_method}")
-        # Example: use y_test[0] and y_test[1] as labels for calibration
-        if calibration_method == 'temperature':
-            scaler_first = TemperatureScaler()
-            scaler_first.fit(ensemble_first.reshape(-1, ensemble_first.shape[-1]), np.argmax(y_test[0], axis=-1).flatten())
-            ensemble_first = scaler_first.transform(ensemble_first.reshape(-1, ensemble_first.shape[-1])).reshape(ensemble_first.shape)
-            scaler_sixth = TemperatureScaler()
-            scaler_sixth.fit(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1]), np.argmax(y_test[1], axis=-1).flatten())
-            ensemble_sixth = scaler_sixth.transform(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1])).reshape(ensemble_sixth.shape)
-        elif calibration_method == 'platt':
-            scaler_first = PlattScaler()
-            scaler_first.fit(ensemble_first.reshape(-1, ensemble_first.shape[-1]), np.argmax(y_test[0], axis=-1).flatten())
-            ensemble_first = scaler_first.transform(ensemble_first.reshape(-1, ensemble_first.shape[-1])).reshape(ensemble_first.shape)
-            scaler_sixth = PlattScaler()
-            scaler_sixth.fit(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1]), np.argmax(y_test[1], axis=-1).flatten())
-            ensemble_sixth = scaler_sixth.transform(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1])).reshape(ensemble_sixth.shape)
-        elif calibration_method == 'isotonic':
-            calibrator_first = IsotonicCalibrator()
-            calibrator_first.fit(ensemble_first.reshape(-1, ensemble_first.shape[-1]), np.argmax(y_test[0], axis=-1).flatten())
-            ensemble_first = calibrator_first.transform(ensemble_first.reshape(-1, ensemble_first.shape[-1])).reshape(ensemble_first.shape)
-            calibrator_sixth = IsotonicCalibrator()
-            calibrator_sixth.fit(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1]), np.argmax(y_test[1], axis=-1).flatten())
-            ensemble_sixth = calibrator_sixth.transform(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1])).reshape(ensemble_sixth.shape)
+    if 'ensemble_first' in locals() and 'ensemble_sixth' in locals():
+        from ensemble.calibration import TemperatureScaler, PlattScaler, IsotonicCalibrator
+        calibration_method = getattr(config, 'CALIBRATION_METHOD', 'none').lower()
+        if calibration_method != 'none':
+            logger.info(f"[Pipeline] Applying calibration method: {calibration_method}")
+            # Example: use y_test[0] and y_test[1] as labels for calibration
+            if calibration_method == 'temperature':
+                scaler_first = TemperatureScaler()
+                scaler_first.fit(ensemble_first.reshape(-1, ensemble_first.shape[-1]), np.argmax(y_test[0], axis=-1).flatten())
+                ensemble_first = scaler_first.transform(ensemble_first.reshape(-1, ensemble_first.shape[-1])).reshape(ensemble_first.shape)
+                scaler_sixth = TemperatureScaler()
+                scaler_sixth.fit(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1]), np.argmax(y_test[1], axis=-1).flatten())
+                ensemble_sixth = scaler_sixth.transform(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1])).reshape(ensemble_sixth.shape)
+            elif calibration_method == 'platt':
+                scaler_first = PlattScaler()
+                scaler_first.fit(ensemble_first.reshape(-1, ensemble_first.shape[-1]), np.argmax(y_test[0], axis=-1).flatten())
+                ensemble_first = scaler_first.transform(ensemble_first.reshape(-1, ensemble_first.shape[-1])).reshape(ensemble_first.shape)
+                scaler_sixth = PlattScaler()
+                scaler_sixth.fit(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1]), np.argmax(y_test[1], axis=-1).flatten())
+                ensemble_sixth = scaler_sixth.transform(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1])).reshape(ensemble_sixth.shape)
+            elif calibration_method == 'isotonic':
+                calibrator_first = IsotonicCalibrator()
+                calibrator_first.fit(ensemble_first.reshape(-1, ensemble_first.shape[-1]), np.argmax(y_test[0], axis=-1).flatten())
+                ensemble_first = calibrator_first.transform(ensemble_first.reshape(-1, ensemble_first.shape[-1])).reshape(ensemble_first.shape)
+                calibrator_sixth = IsotonicCalibrator()
+                calibrator_sixth.fit(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1]), np.argmax(y_test[1], axis=-1).flatten())
+                ensemble_sixth = calibrator_sixth.transform(ensemble_sixth.reshape(-1, ensemble_sixth.shape[-1])).reshape(ensemble_sixth.shape)
+    else:
+        logger.warning("[Pipeline] Skipping calibration: ensemble_first or ensemble_sixth not available.")
 
-    # Compute final predictions from ensemble (class indices, 1-based)
-    final_pred_first_five = np.argmax(ensemble_first, axis=-1) + 1
-    final_pred_sixth = np.argmax(ensemble_sixth, axis=-1) + 1
 
-    # Add per-fold ensemble predictions to rounds for plotting
-    # Use only per-fold ensemble predictions and the final ensemble for plotting
-    rounds_first_five = per_fold_ensemble_preds_first + [final_pred_first_five]
-    rounds_sixth = per_fold_ensemble_preds_sixth + [final_pred_sixth]
-    round_labels = [f"Ensemble CV{idx+1}" for idx in range(len(per_fold_ensemble_preds_first))] + ['Final']
+    # Compute final predictions from ensemble (class indices, 1-based) only if available
+    if 'ensemble_first' in locals() and 'ensemble_sixth' in locals():
+        final_pred_first_five = np.argmax(ensemble_first, axis=-1) + 1
+        final_pred_sixth = np.argmax(ensemble_sixth, axis=-1) + 1
+        # Add per-fold ensemble predictions to rounds for plotting
+        # Use only per-fold ensemble predictions and the final ensemble for plotting
+        # Only append final_pred_first_five/sixth if not None
+        rounds_first_five = per_fold_ensemble_preds_first.copy()
+        rounds_sixth = per_fold_ensemble_preds_sixth.copy()
+        round_labels = [f"Ensemble CV{idx+1}" for idx in range(len(per_fold_ensemble_preds_first))]
+        if final_pred_first_five is not None:
+            rounds_first_five.append(final_pred_first_five)
+            round_labels.append('Final')
+        if final_pred_sixth is not None:
+            rounds_sixth.append(final_pred_sixth)
+    else:
+        logger.warning("[Pipeline] Skipping final ensemble predictions: ensemble_first or ensemble_sixth not available.")
+        final_pred_first_five = None
+        final_pred_sixth = None
+        rounds_first_five = per_fold_ensemble_preds_first
+        rounds_sixth = per_fold_ensemble_preds_sixth
+        round_labels = [f"Ensemble CV{idx+1}" for idx in range(len(per_fold_ensemble_preds_first))]
 
     # Select the best prediction by highest number of balls matched
     def count_matches(pred_first, pred_sixth, y_true_first_five, y_true_sixth):
@@ -440,7 +475,12 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         )
         # Combine all six balls for std plot
         y_true_all = np.concatenate([y_true_first_five, y_true_sixth.reshape(-1, 1)], axis=1)
-        rounds_all = [np.concatenate([r5, r6.reshape(-1, 1)], axis=1) for r5, r6 in zip(rounds_first_five, rounds_sixth)]
+        rounds_all = []
+        for idx, (r5, r6) in enumerate(zip(rounds_first_five, rounds_sixth)):
+            if r6 is None:
+                logger.warning(f"[Pipeline] Skipping round {idx+1} for std plot: sixth prediction is None.")
+                continue
+            rounds_all.append(np.concatenate([r5, r6.reshape(-1, 1)], axis=1))
         prev_pred_all = None
         if prev_pred_first_five is not None and prev_pred_sixth is not None:
             prev_pred_all = np.concatenate([prev_pred_first_five, prev_pred_sixth.reshape(-1, 1)], axis=1)
@@ -460,11 +500,11 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         log_plot_and_artifact(
             plot_multi_round_kl_divergence,
             dict(
-                y_true=y_true_first_five,
-                rounds_pred_list=rounds_first_five,
-                prev_pred=prev_pred_first_five,
-                num_balls=5,
-                n_classes=69,
+                y_true=y_true_all,
+                rounds_pred_list=rounds_all,
+                prev_pred=prev_pred_all,
+                num_balls=6,
+                n_classes=[69, 26],
                 round_labels=round_labels,
                 prev_label='Previous'
             ),

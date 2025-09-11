@@ -1,4 +1,3 @@
-
 """
 models.mlp_model
 ---------------
@@ -157,8 +156,14 @@ class MLPModel(BaseModel):
             else:
                 pred_first = np.argmax(preds, axis=-1) + 1
                 pred_sixth = None
-            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
+            fold_result = {'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth}
+            results.append(fold_result)
             self.logger.info(f"[MLP][CV] Fold {fold+1} result: {eval_result}")
+            # Save per-fold results to file for PSO/Meta search visibility
+            import os, json
+            os.makedirs('experiments/pso_cv_folds', exist_ok=True)
+            with open(f'experiments/pso_cv_folds/mlp_cv_fold{fold+1}.json', 'w') as f:
+                json.dump(fold_result, f, default=str)
         return results
     def __init__(self, input_shape, num_first=5, num_first_classes=69, num_sixth_classes=26, hidden_units=64, dropout_rate=0.5, learning_rate=None, label_smoothing=None, temp_max=None):
         self.logger = logging.getLogger(__name__)
@@ -270,6 +275,17 @@ class MLPModel(BaseModel):
         return model
 
     def fit(self, X, y, validation_data=None, epochs=100, batch_size=32, callbacks=None, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[MLP][ERROR] Single-sample fit detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample fit is not allowed. Input shape: {X.shape}")
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
         def get_y_shapes(y):
             if isinstance(y, dict):
                 return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
@@ -334,33 +350,43 @@ class MLPModel(BaseModel):
         return history
 
     def predict(self, X, **kwargs):
-        self.logger.info(f"[MLP] Starting prediction: X type={type(X)}, shape={getattr(X, 'shape', None)}")
+        # Enforce consistent input shape: always (batch_size, ...)
         import numpy as np
-        import tensorflow as tf
-        # Validate input type
-        if not isinstance(X, (np.ndarray, tf.Tensor)):
-            self.logger.error(f"[MLP][ERROR] Input X is not a numpy array or tf.Tensor: type={type(X)}")
-            raise ValueError(f"Input X must be np.ndarray or tf.Tensor, got {type(X)}")
-        # Validate input shape is fully defined (no None or 0 dims)
-        if not hasattr(X, 'shape') or X.shape is None:
-            self.logger.error(f"[MLP][ERROR] Input X has no shape attribute or shape is None: {X}")
-            raise ValueError(f"Input X has no shape attribute or shape is None: {X}")
-        if any(s is None or s == 0 for s in X.shape):
-            self.logger.error(f"[MLP][ERROR] Input X has undefined or zero shape dimensions: {X.shape}")
-            raise ValueError(f"Input X has undefined or zero shape dimensions: {X.shape}")
-        # Automatically flatten 3D input to 2D if needed
-        if hasattr(X, 'ndim') and X.ndim == 3:
-            self.logger.info(f"[MLP] Flattening 3D input {X.shape} to 2D for MLP prediction.")
-            X = X.reshape(X.shape[0], -1)
-        elif hasattr(X, 'ndim') and X.ndim < 2:
-            self.logger.error(f"[MLP][ERROR] Input X must be at least 2D, got shape {X.shape}")
-            raise ValueError(f"Input X must be at least 2D, got shape {X.shape}")
-        self.logger.info(f"[MLP] Predicting with input shape: {X.shape}")
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[MLP][ERROR] Single-sample prediction detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample prediction is not allowed. Input shape: {X.shape}")
+        # If input is 2D but model expects 3D, try to reshape
+        expected_shape = self.input_shape if hasattr(self, 'input_shape') else None
+        if X.ndim == 2 and expected_shape is not None and len(expected_shape) == 2:
+            n_features = X.shape[1]
+            prod_expected = expected_shape[0] * expected_shape[1]
+            if n_features == prod_expected:
+                self.logger.info(f"[MLP] Reshaping 2D input {X.shape} to 3D ({X.shape[0]}, {expected_shape[0]}, {expected_shape[1]}) for prediction.")
+                X = X.reshape(X.shape[0], expected_shape[0], expected_shape[1])
+            else:
+                self.logger.error(f"[MLP][ERROR] Input X shape {X.shape} cannot be reshaped to expected 3D shape ({X.shape[0]}, {expected_shape[0]}, {expected_shape[1]}).")
+                raise ValueError(f"Input X shape {X.shape} cannot be reshaped to expected 3D shape ({X.shape[0]}, {expected_shape[0]}, {expected_shape[1]}).")
+        elif X.ndim == 3 and expected_shape is not None and (X.shape[1], X.shape[2]) != expected_shape:
+            self.logger.error(f"[MLP][ERROR] Input X shape {X.shape} does not match expected 3D shape ({X.shape[0]}, {expected_shape[0]}, {expected_shape[1]}).")
+            raise ValueError(f"Input X shape {X.shape} does not match expected 3D shape ({X.shape[0]}, {expected_shape[0]}, {expected_shape[1]}).")
+        elif X.ndim != 3:
+            self.logger.error(f"[MLP][ERROR] Input X must be 3D (batch, {expected_shape[0]}, {expected_shape[1]}), got shape {X.shape}")
+            raise ValueError(f"Input X must be 3D (batch, {expected_shape[0]}, {expected_shape[1]}), got shape {X.shape}")
+        # Ensure float32 dtype for Keras
+        if X.dtype != np.float32:
+            self.logger.info(f"[MLP] Converting input X from dtype {X.dtype} to float32 for prediction.")
+            X = X.astype(np.float32)
+        self.logger.info(f"[MLP] Predicting with input shape: {X.shape}, dtype: {X.dtype}")
         try:
             preds = self.model.predict(X, **kwargs)
             if isinstance(preds, (list, tuple)):
+                preds = [np.atleast_2d(p) for p in preds]
                 pred_shapes = [p.shape for p in preds]
             else:
+                preds = np.atleast_2d(preds)
                 pred_shapes = preds.shape
             self.logger.info(f"[MLP] Prediction complete: output shapes={pred_shapes}")
             return preds
@@ -368,19 +394,22 @@ class MLPModel(BaseModel):
             import traceback
             tb = traceback.format_exc()
             self.logger.error(f"[MLP][ERROR] Exception during predict: {e}\nTraceback:\n{tb}")
+            self.logger.error(f"[MLP][ERROR] Input X diagnostics: type={type(X)}, shape={getattr(X, 'shape', None)}, dtype={getattr(X, 'dtype', None)}")
             raise
 
     def evaluate(self, X, y, batch_size=32, **kwargs):
-        def get_y_shapes(y):
-            if isinstance(y, dict):
-                return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
-            elif isinstance(y, (list, tuple)):
-                return [arr.shape if hasattr(arr, 'shape') else type(arr) for arr in y]
-            elif hasattr(y, 'shape'):
-                return y.shape
-            else:
-                return type(y)
-        self.logger.info(f"[MLP] Starting evaluation: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[MLP][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
+        self.logger.info(f"[MLP] Starting evaluation: X shape={X.shape}, y shape={getattr(y, 'shape', type(y))}")
         # Remove training-only arguments from kwargs for evaluate
         for arg in ["epochs", "batch_size", "validation_split", "verbose"]:
             kwargs.pop(arg, None)

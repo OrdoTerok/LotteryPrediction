@@ -31,6 +31,55 @@ from tensorflow.keras import layers, Model
 import logging
 
 class RNNModel:
+    def fit(self, X, y, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[RNN][ERROR] Single-sample fit detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample fit is not allowed. Input shape: {X.shape}")
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
+        self.logger.info(f"[RNN] Starting fit: X shape={X.shape}, y shape={getattr(y, 'shape', type(y))}")
+        return self.model.fit(X, y, **kwargs)
+    def predict(self, X, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[RNN][ERROR] Single-sample prediction detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample prediction is not allowed. Input shape: {X.shape}")
+        self.logger.info(f"[RNN] Predicting with input shape: {X.shape}")
+        preds = self.model.predict(X, **kwargs)
+        # Always return (batch_size, ...) shape
+        if isinstance(preds, (list, tuple)):
+            preds = [np.atleast_2d(p) for p in preds]
+        else:
+            preds = np.atleast_2d(preds)
+        return preds
+    def evaluate(self, X, y, batch_size=32, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[RNN][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
+        self.logger.info(f"[RNN] Starting evaluation: X shape={X.shape}, y shape={getattr(y, 'shape', type(y))}")
+        results = self.model.evaluate(X, y, batch_size=batch_size, **kwargs)
+        probs = self.model.predict(X)
+        kl_uniform = self.kl_to_uniform_probs(probs)
+        self.logger.info(f"[RNN] Evaluation complete: results={results}, KL-to-uniform={kl_uniform:.4f}")
+        return {"results": results, "kl_to_uniform": kl_uniform}
     def kl_to_uniform_probs(self, probs):
         """
         Compute KL divergence to uniform for predicted probabilities.
@@ -74,8 +123,14 @@ class RNNModel:
             else:
                 pred_first = np.argmax(preds, axis=-1) + 1
                 pred_sixth = None
-            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
+            fold_result = {'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth}
+            results.append(fold_result)
             self.logger.info(f"[RNN][CV] Fold {fold+1} result: {eval_result}")
+            # Save per-fold results to file for PSO/Meta search visibility
+            import os, json
+            os.makedirs('experiments/pso_cv_folds', exist_ok=True)
+            with open(f'experiments/pso_cv_folds/rnn_cv_fold{fold+1}.json', 'w') as f:
+                json.dump(fold_result, f, default=str)
         return results
     @staticmethod
     def build_rnn_model(hp=None, input_shape=(10, 6),
@@ -257,6 +312,10 @@ class RNNModel:
         self.logger.info("[RNN] Model created.")
 
     def fit(self, X, y, **kwargs):
+        # Prevent single-sample fit (batch size 1)
+        if hasattr(X, 'shape') and X.shape[0] == 1:
+            self.logger.error(f"[RNN][ERROR] Single-sample fit detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample fit is not allowed. Input shape: {X.shape}")
         def get_y_shapes(y):
             if isinstance(y, dict):
                 return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
@@ -295,6 +354,10 @@ class RNNModel:
         return history
 
     def predict(self, X, **kwargs):
+        # Prevent single-sample prediction (batch size 1)
+        if hasattr(X, 'shape') and X.shape[0] == 1:
+            self.logger.error(f"[RNN][ERROR] Single-sample prediction detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample prediction is not allowed. Input shape: {X.shape}")
         import numpy as np
         if isinstance(X, list):
             self.logger.warning(f"[RNN] Input X is a list, converting to numpy array.")
@@ -313,6 +376,10 @@ class RNNModel:
             return None
 
     def evaluate(self, X, y, **kwargs):
+        # Prevent single-sample evaluation (batch size 1)
+        if hasattr(X, 'shape') and X.shape[0] == 1:
+            self.logger.error(f"[RNN][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
         # Remove training-only arguments from kwargs for evaluate
         for arg in ["epochs", "batch_size", "validation_split", "verbose"]:
             kwargs.pop(arg, None)

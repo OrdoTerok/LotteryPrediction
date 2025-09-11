@@ -1,4 +1,3 @@
-
 """
 models.lstm_model
 -----------------
@@ -76,8 +75,14 @@ class LSTMModel:
             else:
                 pred_first = np.argmax(preds, axis=-1) + 1
                 pred_sixth = None
-            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
+            fold_result = {'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth}
+            results.append(fold_result)
             self.logger.info(f"[LSTM][CV] Fold {fold+1} result: {eval_result}")
+            # Save per-fold results to file for PSO/Meta search visibility
+            import os, json
+            os.makedirs('experiments/pso_cv_folds', exist_ok=True)
+            with open(f'experiments/pso_cv_folds/lstm_cv_fold{fold+1}.json', 'w') as f:
+                json.dump(fold_result, f, default=str)
         return results
     class LoggingCallback(tf.keras.callbacks.Callback):
         def __init__(self, logger):
@@ -134,6 +139,17 @@ class LSTMModel:
         self.logger.info("[LSTM] Model created.")
 
     def fit(self, X, y, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[LSTM][ERROR] Single-sample fit detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample fit is not allowed. Input shape: {X.shape}")
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
         def get_y_shapes(y):
             if isinstance(y, dict):
                 return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}
@@ -144,6 +160,41 @@ class LSTMModel:
             else:
                 return type(y)
         self.logger.info(f"[LSTM] Starting fit: X shape={X.shape}, y shapes={get_y_shapes(y)}")
+    def predict(self, X, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[LSTM][ERROR] Single-sample prediction detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample prediction is not allowed. Input shape: {X.shape}")
+        self.logger.info(f"[LSTM] Predicting with input shape: {X.shape}")
+        preds = self.model.predict(X, **kwargs)
+        # Always return (batch_size, ...) shape
+        if isinstance(preds, (list, tuple)):
+            preds = [np.atleast_2d(p) for p in preds]
+        else:
+            preds = np.atleast_2d(preds)
+        return preds
+    def evaluate(self, X, y, batch_size=32, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            self.logger.error(f"[LSTM][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
+        self.logger.info(f"[LSTM] Starting evaluation: X shape={X.shape}, y shape={getattr(y, 'shape', type(y))}")
+        results = self.model.evaluate(X, y, batch_size=batch_size, **kwargs)
+        probs = self.model.predict(X)
+        kl_uniform = self.kl_to_uniform_probs(probs)
+        self.logger.info(f"[LSTM] Evaluation complete: results={results}, KL-to-uniform={kl_uniform:.4f}")
+        return {"results": results, "kl_to_uniform": kl_uniform}
         # Apply label smoothing if set
         if hasattr(self, 'model') and hasattr(self, 'model').__self__:
             label_smoothing = getattr(self.model.__self__, 'label_smoothing', None)
@@ -178,6 +229,10 @@ class LSTMModel:
         return history
 
     def predict(self, X, **kwargs):
+        # Prevent single-sample prediction (batch size 1)
+        if hasattr(X, 'shape') and X.shape[0] == 1:
+            self.logger.error(f"[LSTM][ERROR] Single-sample prediction detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample prediction is not allowed. Input shape: {X.shape}")
         self.logger.info(f"[LSTM] Starting prediction: X shape={X.shape}")
         try:
             preds = self.model.predict(X, **kwargs)
@@ -192,6 +247,10 @@ class LSTMModel:
             return None
 
     def evaluate(self, X, y, **kwargs):
+        # Prevent single-sample evaluation (batch size 1)
+        if hasattr(X, 'shape') and X.shape[0] == 1:
+            self.logger.error(f"[LSTM][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid TensorFlow retracing.")
+            raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
         def get_y_shapes(y):
             if isinstance(y, dict):
                 return {k: (v.shape if hasattr(v, 'shape') else type(v)) for k, v in y.items()}

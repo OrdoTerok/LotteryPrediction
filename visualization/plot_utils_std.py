@@ -175,9 +175,17 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
     labels = []
     kls.append([0.0 for _ in range(num_balls)])
     labels.append('True')
+    # Support per-ball n_classes (list or int)
+    if isinstance(n_classes, int):
+        n_classes_list = [n_classes] * num_balls
+    else:
+        n_classes_list = n_classes
     def get_dist_matrix(arr):
         # arr: (n_samples, num_balls)
-        return np.stack([np.bincount(arr[:, i]-1, minlength=n_classes) / arr.shape[0] for i in range(num_balls)], axis=0)
+        return np.stack([
+            np.bincount(arr[:, i]-1, minlength=n_classes_list[i]) / arr.shape[0]
+            for i in range(num_balls)
+        ], axis=0)
     true_dists = get_dist_matrix(y_true)
     if prev_pred is not None:
         prev_dists = get_dist_matrix(prev_pred)
@@ -200,7 +208,14 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
     for idx, y_pred in enumerate(rounds_pred_list):
         logger.info(f"[PLOT DIAG] plot_multi_round_kl_divergence round {idx+1} y_pred (first 5): %s", y_pred[:5])
         pred_dists = get_dist_matrix(y_pred)
-        kl = np.sum(true_dists * np.log(np.clip(true_dists / np.clip(pred_dists, 1e-12, 1), 1e-12, 1)), axis=1)
+        # Compute KL for each ball, handling per-ball n_classes
+        kl = np.zeros(num_balls)
+        for i in range(num_balls):
+            # Only compute KL if both distributions are valid (sum to 1)
+            if np.all(true_dists[i] > 0) and np.all(pred_dists[i] > 0):
+                kl[i] = np.sum(true_dists[i] * np.log(np.clip(true_dists[i] / np.clip(pred_dists[i], 1e-12, 1), 1e-12, 1)))
+            else:
+                kl[i] = np.nan
         kls.append(kl)
         if round_labels and idx < len(round_labels):
             label = round_labels[idx]

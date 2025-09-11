@@ -81,6 +81,13 @@ def main():
     profiler.dump_stats(profile_path)
     logger.info(f"[Pipeline] Profiling complete.")
     logger.info("[Pipeline] Pipeline complete.")
+    # Clean up logs: keep only the 10 most recent log files
+    try:
+        from util.cleanup_logs import cleanup_logs
+        cleanup_logs()
+        logger.info("[Pipeline] Log cleanup complete.")
+    except Exception as e:
+        logger.warning(f"[Pipeline] Log cleanup failed: {e}")
 
 if __name__ == "__main__":
     main()

@@ -354,8 +354,12 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 	fitness_func_to_use = fitness_func_cv if cv > 1 else fitness_func_default
 
 	from joblib import Parallel, delayed
+	import json
+	os.makedirs('experiments/pso_iterations', exist_ok=True)
+	all_iter_results = []
 	for iter in range(n_iter):
 		logger.info(f"[PSO] Iteration {iter+1}/{n_iter}")
+		iter_results = []
 		try:
 			fitnesses = Parallel(n_jobs=-1, backend="threading")(delayed(lambda p: p.evaluate(lambda: fitness_func_to_use(train_df, test_df)))(particle) for particle in particles)
 		except Exception as e:
@@ -365,9 +369,37 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 			raise
 		for idx, (particle, fitness) in enumerate(zip(particles, fitnesses)):
 			logger.info(f"[PSO] Particle {idx+1} fitness: {fitness:.6f}")
+			# Save per-particle, per-iteration result
+			particle_result = {
+				'iteration': iter+1,
+				'particle': idx+1,
+				'position': particle.position.tolist() if hasattr(particle.position, 'tolist') else particle.position,
+				'fitness': fitness
+			}
+			# If cross-validation, try to load per-fold results from file (if available)
+			if cv and cv > 1:
+				fold_results = []
+				for fold in range(1, cv+1):
+					# Try to load per-model fold results
+					for model_type in ['mlp', 'lstm', 'rnn', 'lgbm']:
+						fold_file = f'experiments/pso_cv_folds/{model_type}_cv_fold{fold}.json'
+						if os.path.exists(fold_file):
+							with open(fold_file, 'r') as f:
+								try:
+									fold_data = json.load(f)
+									fold_results.append({'model': model_type, 'fold': fold, 'result': fold_data})
+								except Exception as e:
+									logger.warning(f"[PSO] Could not load {fold_file}: {e}")
+				if fold_results:
+					particle_result['cv_folds'] = fold_results
+			iter_results.append(particle_result)
 			if fitness < global_best_fitness:
 				global_best_fitness = fitness
 				global_best_position = particle.position.copy()
+		# Save per-iteration results
+		with open(f'experiments/pso_iterations/pso_iter{iter+1}.json', 'w') as f:
+			json.dump(iter_results, f, default=str)
+		all_iter_results.append(iter_results)
 		for particle in particles:
 			if global_best_position is None:
 				ref_position = particle.best_position
@@ -375,6 +407,9 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 				ref_position = global_best_position
 			particle.update_velocity(ref_position)
 			particle.update_position(bounds)
+	# Save all iterations summary
+	with open('experiments/pso_iterations/pso_all_iterations.json', 'w') as f:
+		json.dump(all_iter_results, f, default=str)
 	_PSO_RUNNING = False
 	logger.info(f"[PSO] Best fitness: {global_best_fitness:.6f}")
 	logger.info(f"[PSO] Best position: {global_best_position}")

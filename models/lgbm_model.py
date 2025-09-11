@@ -36,8 +36,14 @@ class LightGBMModel(BaseModel):
                 pred_first.append(m.predict(X_val))
             pred_first = np.stack(pred_first, axis=1) + 1  # shape (n_samples, num_first)
             pred_sixth = model.model_sixth.predict(X_val).reshape(-1, 1) + 1  # shape (n_samples, 1)
-            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
+            fold_result = {'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth}
+            results.append(fold_result)
             logger.info(f"[LGBM][CV] Fold {fold+1} result: {eval_result}")
+            # Save per-fold results to file for PSO/Meta search visibility
+            import os, json
+            os.makedirs('experiments/pso_cv_folds', exist_ok=True)
+            with open(f'experiments/pso_cv_folds/lgbm_cv_fold{fold+1}.json', 'w') as f:
+                json.dump(fold_result, f, default=str)
         return results
     def __init__(self, num_first=5, num_first_classes=69, num_sixth_classes=26, params=None):
         """
@@ -65,6 +71,22 @@ class LightGBMModel(BaseModel):
         self.model_sixth = lgb.LGBMClassifier(**params6)
 
     def fit(self, X, y, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        logger = logging.getLogger(__name__)
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            logger.error(f"[LGBM][ERROR] Single-sample fit detected (shape={X.shape}). This is not allowed to avoid LightGBM instability.")
+            raise ValueError(f"Single-sample fit is not allowed. Input shape: {X.shape}")
+        # Automatically flatten 3D input to 2D if needed
+        if X.ndim == 3:
+            logger.info(f"[LGBM] Flattening 3D input {X.shape} to 2D for fit.")
+            X = X.reshape(X.shape[0], -1)
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
         """
         Fit the LightGBM models to the training data.
         Args:
@@ -119,43 +141,84 @@ class LightGBMModel(BaseModel):
         logger.info("[LGBM] Finished fit for all balls.")
 
     def predict(self, X, feature_names=None, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
         logger = logging.getLogger(__name__)
-        logger.info(f"[LGBM] Starting prediction: X shape={X.shape}")
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            logger.error(f"[LGBM][ERROR] Single-sample prediction detected (shape={X.shape}). This is not allowed to avoid LightGBM instability.")
+            raise ValueError(f"Single-sample prediction is not allowed. Input shape: {X.shape}")
         import pandas as pd
+        # Automatically flatten 3D input to 2D if needed
+        if X.ndim == 3:
+            X = X.reshape(X.shape[0], -1)
+        if feature_names is not None and not isinstance(X, pd.DataFrame):
+            if len(feature_names) == X.shape[1]:
+                X = pd.DataFrame(X, columns=feature_names)
+            else:
+                X = pd.DataFrame(X)
+        preds = []
+        for idx, model in enumerate(self.models_first):
+            try:
+                pred = model.predict_proba(X)
+                preds.append(pred)
+            except Exception as e:
+                logger.error(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
+                return None
         try:
-            # Automatically flatten 3D input to 2D if needed
-            if X.ndim == 3:
-                X = X.reshape(X.shape[0], -1)
-            if feature_names is not None and not isinstance(X, pd.DataFrame):
-                if len(feature_names) == X.shape[1]:
-                    X = pd.DataFrame(X, columns=feature_names)
-                else:
-                    X = pd.DataFrame(X)
-            preds = []
-            for idx, model in enumerate(self.models_first):
-                try:
-                    pred = model.predict_proba(X)
-                    preds.append(pred)
-                except Exception as e:
-                    logger.error(f"  [ERROR][LGBM] Model {idx} ({type(model)}): Exception during predict_proba: {e}")
-                    return None
-            try:
-                first_five_pred = np.stack(preds, axis=1)
-            except Exception as e:
-                logger.error(f"[ERROR][LGBM] Exception during np.stack for first_five_pred: {e}")
-                return None
-            try:
-                sixth_pred = self.model_sixth.predict_proba(X)[:, np.newaxis, :]
-            except Exception as e:
-                logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
-                return None
+            first_five_pred = np.stack(preds, axis=1)
+        except Exception as e:
+            logger.error(f"[ERROR][LGBM] Exception during np.stack for first_five_pred: {e}")
+            return None
+        try:
+            sixth_pred = self.model_sixth.predict_proba(X)[:, np.newaxis, :]
+        except Exception as e:
+            logger.error(f"[ERROR][LGBM] Exception during model_sixth.predict_proba: {e}")
+            return None
+        # Always return (batch_size, ...) shape
+        first_five_pred = np.atleast_3d(first_five_pred)
+        sixth_pred = np.atleast_3d(sixth_pred)
+        try:
             logger.info(f"[LGBM] Prediction complete: first_five_pred shape={first_five_pred.shape}, sixth_pred shape={sixth_pred.shape}")
             return first_five_pred, sixth_pred
         except Exception as e:
             logger.error(f"[LGBM][ERROR] Exception during predict: {e}")
             return None
+    def evaluate(self, X, y, batch_size=32, **kwargs):
+        # Enforce consistent input shape: always (batch_size, ...)
+        import numpy as np
+        logger = logging.getLogger(__name__)
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = np.expand_dims(X, 0)
+        if X.shape[0] == 1:
+            logger.error(f"[LGBM][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid LightGBM instability.")
+            raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
+        # Standardize y shape
+        if isinstance(y, (np.ndarray, list)) and hasattr(y, 'ndim') and y.ndim == 1:
+            y = np.expand_dims(y, 0)
+        logger.info(f"[LGBM] Starting evaluation: X shape={X.shape}, y shape={getattr(y, 'shape', type(y))}")
+        # Remove training-only arguments from kwargs for evaluate
+        for arg in ["epochs", "batch_size", "validation_split", "verbose"]:
+            kwargs.pop(arg, None)
+        # Evaluate each model
+        results = {}
+        for i, model in enumerate(self.models_first):
+            results[f'first_{i+1}'] = model.score(X, y[0][:, i])
+        results['sixth'] = self.model_sixth.score(X, y[1][:, 0])
+        preds = self.predict(X)
+        kl_uniform = self.kl_to_uniform_probs(preds)
+        logger.info(f"[LGBM] Evaluation complete: results={results}, KL-to-uniform={kl_uniform:.4f}")
+        return {"results": results, "kl_to_uniform": kl_uniform}
 
     def evaluate(self, X, y, feature_names=None, **kwargs):
+        # Prevent single-sample evaluation (batch size 1)
+        if hasattr(X, 'shape') and X.shape[0] == 1:
+            logger = logging.getLogger(__name__)
+            logger.error(f"[LGBM][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid LightGBM instability.")
+            raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
         import logging
         logger = logging.getLogger(__name__)
         logger.info("  [LGBM] Starting evaluation...")
