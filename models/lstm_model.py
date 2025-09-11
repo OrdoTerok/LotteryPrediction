@@ -49,7 +49,7 @@ class LSTMModel:
             cv: Number of cross-validation folds.
             **kwargs: Additional arguments for fitting/evaluation.
         Returns:
-            List of evaluation results for each fold.
+            List of dicts per fold: {'eval': eval_result, 'pred': predictions}
         """
         from sklearn.model_selection import KFold
         results = []
@@ -68,7 +68,15 @@ class LSTMModel:
             model = LSTMModel(self.model.input_shape[1:])
             model.fit(X_train, y_train, **kwargs)
             eval_result = model.evaluate(X_val, y_val, **kwargs)
-            results.append(eval_result)
+            # Get predictions for this fold (argmax for each output)
+            preds = model.model.predict(X_val, verbose=0)
+            if isinstance(preds, (list, tuple)):
+                pred_first = np.argmax(preds[0], axis=-1) + 1
+                pred_sixth = np.argmax(preds[1], axis=-1) + 1
+            else:
+                pred_first = np.argmax(preds, axis=-1) + 1
+                pred_sixth = None
+            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
             self.logger.info(f"[LSTM][CV] Fold {fold+1} result: {eval_result}")
         return results
     class LoggingCallback(tf.keras.callbacks.Callback):

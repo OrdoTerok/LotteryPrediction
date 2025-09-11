@@ -107,11 +107,33 @@ def diversity_penalty(y_pred):
     return penalty
 
 class MLPModel(BaseModel):
+    def kl_to_uniform_probs(self, probs):
+        """
+        Compute KL divergence to uniform for predicted probabilities.
+        Args:
+            probs: np.ndarray or list of np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+        Returns:
+            float: mean KL divergence to uniform
+        """
+        from util.metrics import kl_to_uniform
+        import numpy as np
+        # If probs is a list (multi-output), compute KL for each and average
+        if isinstance(probs, (list, tuple)):
+            return float(np.mean([self.kl_to_uniform_probs(p) for p in probs]))
+        # If probs is a numpy array
+        if hasattr(probs, 'ndim'):
+            if probs.ndim == 3:
+                # For multi-ball, average over balls
+                return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+            return float(kl_to_uniform(probs))
+        # Fallback: cannot compute
+        raise ValueError(f"Unsupported type for probs in kl_to_uniform_probs: {type(probs)}")
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
-        Perform K-fold cross-validation. Returns list of per-fold evaluation results.
+        Perform K-fold cross-validation. Returns list of dicts per fold: {'eval': eval_result, 'pred_first': ..., 'pred_sixth': ...}
         """
         from sklearn.model_selection import KFold
+        import numpy as np
         results = []
         kf = KFold(n_splits=cv, shuffle=True, random_state=42)
         for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
@@ -128,7 +150,14 @@ class MLPModel(BaseModel):
             model = MLPModel(self.input_shape)
             model.fit(X_train, y_train, **kwargs)
             eval_result = model.evaluate(X_val, y_val, **kwargs)
-            results.append(eval_result)
+            preds = model.model.predict(X_val, verbose=0)
+            if isinstance(preds, (list, tuple)):
+                pred_first = np.argmax(preds[0], axis=-1) + 1
+                pred_sixth = np.argmax(preds[1], axis=-1) + 1
+            else:
+                pred_first = np.argmax(preds, axis=-1) + 1
+                pred_sixth = None
+            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
             self.logger.info(f"[MLP][CV] Fold {fold+1} result: {eval_result}")
         return results
     def __init__(self, input_shape, num_first=5, num_first_classes=69, num_sixth_classes=26, hidden_units=64, dropout_rate=0.5, learning_rate=None, label_smoothing=None, temp_max=None):
@@ -305,11 +334,29 @@ class MLPModel(BaseModel):
         return history
 
     def predict(self, X, **kwargs):
-        self.logger.info(f"[MLP] Starting prediction: X shape={X.shape}")
+        self.logger.info(f"[MLP] Starting prediction: X type={type(X)}, shape={getattr(X, 'shape', None)}")
+        import numpy as np
+        import tensorflow as tf
+        # Validate input type
+        if not isinstance(X, (np.ndarray, tf.Tensor)):
+            self.logger.error(f"[MLP][ERROR] Input X is not a numpy array or tf.Tensor: type={type(X)}")
+            raise ValueError(f"Input X must be np.ndarray or tf.Tensor, got {type(X)}")
+        # Validate input shape is fully defined (no None or 0 dims)
+        if not hasattr(X, 'shape') or X.shape is None:
+            self.logger.error(f"[MLP][ERROR] Input X has no shape attribute or shape is None: {X}")
+            raise ValueError(f"Input X has no shape attribute or shape is None: {X}")
+        if any(s is None or s == 0 for s in X.shape):
+            self.logger.error(f"[MLP][ERROR] Input X has undefined or zero shape dimensions: {X.shape}")
+            raise ValueError(f"Input X has undefined or zero shape dimensions: {X.shape}")
+        # Automatically flatten 3D input to 2D if needed
+        if hasattr(X, 'ndim') and X.ndim == 3:
+            self.logger.info(f"[MLP] Flattening 3D input {X.shape} to 2D for MLP prediction.")
+            X = X.reshape(X.shape[0], -1)
+        elif hasattr(X, 'ndim') and X.ndim < 2:
+            self.logger.error(f"[MLP][ERROR] Input X must be at least 2D, got shape {X.shape}")
+            raise ValueError(f"Input X must be at least 2D, got shape {X.shape}")
+        self.logger.info(f"[MLP] Predicting with input shape: {X.shape}")
         try:
-            # Automatically flatten 3D input to 2D if needed
-            if hasattr(X, 'ndim') and X.ndim == 3:
-                X = X.reshape(X.shape[0], -1)
             preds = self.model.predict(X, **kwargs)
             if isinstance(preds, (list, tuple)):
                 pred_shapes = [p.shape for p in preds]
@@ -318,8 +365,10 @@ class MLPModel(BaseModel):
             self.logger.info(f"[MLP] Prediction complete: output shapes={pred_shapes}")
             return preds
         except Exception as e:
-            self.logger.error(f"[MLP][ERROR] Exception during predict: {e}")
-            return None
+            import traceback
+            tb = traceback.format_exc()
+            self.logger.error(f"[MLP][ERROR] Exception during predict: {e}\nTraceback:\n{tb}")
+            raise
 
     def evaluate(self, X, y, batch_size=32, **kwargs):
         def get_y_shapes(y):

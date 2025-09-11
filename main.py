@@ -44,6 +44,17 @@ def main():
     os.makedirs(logs_dir, exist_ok=True)
     log_filename = os.path.join(logs_dir, f'log_{timestamp}.rtf')
     setup_logging(log_filename)
+    # Ensure all model loggers propagate to root and are set to INFO
+    import logging
+    for model_logger_name in [
+        'models.lstm_model',
+        'models.rnn_model',
+        'models.mlp_model',
+        'models.lgbm_model',
+    ]:
+        model_logger = logging.getLogger(model_logger_name)
+        model_logger.setLevel(logging.INFO)
+        model_logger.propagate = True
     if getattr(config, 'DEVELOPMENT_MODE', False):
         warnings.warn("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")
     tracker = ExperimentTracker()

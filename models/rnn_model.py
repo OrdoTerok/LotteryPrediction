@@ -31,18 +31,26 @@ from tensorflow.keras import layers, Model
 import logging
 
 class RNNModel:
+    def kl_to_uniform_probs(self, probs):
+        """
+        Compute KL divergence to uniform for predicted probabilities.
+        Args:
+            probs: np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+        Returns:
+           float: mean KL divergence to uniform
+        """
+        from util.metrics import kl_to_uniform
+        import numpy as np
+        if probs.ndim == 3:
+            return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+        return float(kl_to_uniform(probs))
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
         Perform K-fold cross-validation.
-        Args:
-            X: Input features.
-            y: Target values.
-            cv: Number of cross-validation folds.
-            **kwargs: Additional arguments for fitting/evaluation.
-        Returns:
-            List of evaluation results for each fold.
+        Returns list of dicts per fold: {'eval': eval_result, 'pred_first': ..., 'pred_sixth': ...}
         """
         from sklearn.model_selection import KFold
+        import numpy as np
         results = []
         kf = KFold(n_splits=cv, shuffle=True, random_state=42)
         for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
@@ -59,7 +67,14 @@ class RNNModel:
             model = RNNModel(self.model.input_shape[1:])
             model.fit(X_train, y_train, **kwargs)
             eval_result = model.evaluate(X_val, y_val, **kwargs)
-            results.append(eval_result)
+            preds = model.model.predict(X_val, verbose=0)
+            if isinstance(preds, (list, tuple)):
+                pred_first = np.argmax(preds[0], axis=-1) + 1
+                pred_sixth = np.argmax(preds[1], axis=-1) + 1
+            else:
+                pred_first = np.argmax(preds, axis=-1) + 1
+                pred_sixth = None
+            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
             self.logger.info(f"[RNN][CV] Fold {fold+1} result: {eval_result}")
         return results
     @staticmethod
@@ -280,7 +295,11 @@ class RNNModel:
         return history
 
     def predict(self, X, **kwargs):
-        self.logger.info(f"[RNN] Starting prediction: X shape={X.shape}")
+        import numpy as np
+        if isinstance(X, list):
+            self.logger.warning(f"[RNN] Input X is a list, converting to numpy array.")
+            X = np.array(X)
+        self.logger.info(f"[RNN] Starting prediction: X type={type(X)}, shape={getattr(X, 'shape', None)}")
         try:
             preds = self.model.predict(X, **kwargs)
             if isinstance(preds, (list, tuple)):

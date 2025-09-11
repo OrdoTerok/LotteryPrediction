@@ -280,19 +280,23 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 			cv_results = model.cross_validate(X_train, y_train, cv=cv)
 			# If results are dicts, extract the main loss (first value in 'results' or a specific key)
 			if isinstance(cv_results[0], dict):
-				# Try to extract the first value from 'results' key if present
+				# Extract numeric loss from nested dicts
 				losses = []
 				for r in cv_results:
-					if 'results' in r:
-						val = r['results']
-						# If 'results' is a list/tuple/array, take the first value
-						if isinstance(val, (list, tuple, np.ndarray)):
-							losses.append(val[0])
-						else:
-							losses.append(val)
-					else:
-						# Fallback: try to use the first value in the dict
-						losses.append(list(r.values())[0])
+					val = r
+					# If 'eval' key exists, use it
+					if isinstance(val, dict) and 'eval' in val:
+						val = val['eval']
+					# If 'results' key exists, use it
+					if isinstance(val, dict) and 'results' in val:
+						val = val['results']
+					# If still a dict, take first value
+					if isinstance(val, dict):
+						val = list(val.values())[0]
+					# If list/tuple/array, take first value
+					if isinstance(val, (list, tuple, np.ndarray)):
+						val = val[0]
+					losses.append(val)
 				total_loss = float(np.mean(losses))
 			elif isinstance(cv_results[0], (list, tuple, np.ndarray)):
 				total_loss = float(np.mean([r[0] for r in cv_results]))

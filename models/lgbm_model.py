@@ -12,16 +12,10 @@ import logging
 class LightGBMModel(BaseModel):
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
-        Perform K-fold cross-validation.
-        Args:
-            X: Input features.
-            y: Target values.
-            cv: Number of cross-validation folds.
-            **kwargs: Additional arguments for fitting/evaluation.
-        Returns:
-            List of evaluation results for each fold.
+        Perform K-fold cross-validation. Returns list of dicts per fold: {'eval': eval_result, 'pred_first': ..., 'pred_sixth': ...}
         """
         from sklearn.model_selection import KFold
+        import numpy as np
         results = []
         kf = KFold(n_splits=cv, shuffle=True, random_state=42)
         for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
@@ -36,7 +30,13 @@ class LightGBMModel(BaseModel):
             model = LightGBMModel(self.num_first, self.num_first_classes, self.num_sixth_classes, self.params)
             model.fit(X_train, y_train, **kwargs)
             eval_result = model.evaluate(X_val, y_val, **kwargs)
-            results.append(eval_result)
+            # Predict for this fold
+            pred_first = []
+            for i, m in enumerate(model.models_first):
+                pred_first.append(m.predict(X_val))
+            pred_first = np.stack(pred_first, axis=1) + 1  # shape (n_samples, num_first)
+            pred_sixth = model.model_sixth.predict(X_val).reshape(-1, 1) + 1  # shape (n_samples, 1)
+            results.append({'eval': eval_result, 'pred_first': pred_first, 'pred_sixth': pred_sixth})
             logger.info(f"[LGBM][CV] Fold {fold+1} result: {eval_result}")
         return results
     def __init__(self, num_first=5, num_first_classes=69, num_sixth_classes=26, params=None):

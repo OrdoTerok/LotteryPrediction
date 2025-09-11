@@ -23,7 +23,8 @@ from visualization.plot_utils import (
 from visualization.plot_utils_std import (
     plot_multi_round_true_std,
     plot_multi_round_pred_std,
-    plot_multi_round_kl_divergence
+    plot_multi_round_kl_divergence,
+    plot_multi_round_true_pred_std
 )
 from pipeline.experiment_tracker import ExperimentTracker
 from core.cache import Cache
@@ -65,6 +66,25 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
             tracker.log_artifact('data_sets/base_dataset.csv', artifact_name='base_dataset.csv')
     train_df, test_df = split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
     from data import augmentation
+    # Incorporate best prediction from history as pseudo-label if available
+    history = get_results_history()
+    if history and isinstance(history, list) and len(history) > 0:
+        best_entry = history[-1]
+        # Only add if not already in train_df (avoid duplicates)
+        if best_entry.get('first_five') is not None and best_entry.get('sixth') is not None:
+            # Create a DataFrame row for the pseudo-labeled sample
+            pseudo_row = {}
+            # You may need to map these predictions to the correct columns in your train_df
+            for i, val in enumerate(best_entry['first_five']):
+                pseudo_row[f'ball_{i+1}'] = val
+            pseudo_row['powerball'] = best_entry['sixth'][0] if isinstance(best_entry['sixth'], list) else best_entry['sixth']
+            pseudo_row['is_pseudo'] = 1
+            import pandas as pd
+            pseudo_df = pd.DataFrame([pseudo_row])
+            # Only add if not already present
+            if not ((train_df[[f'ball_{i+1}' for i in range(5)] + ['powerball']] == pseudo_df[[f'ball_{i+1}' for i in range(5)] + ['powerball']].iloc[0]).all(axis=1)).any():
+                train_df = pd.concat([train_df, pseudo_df], ignore_index=True)
+                logger.info("Added best prediction from history as pseudo-labeled sample to training data.")
     if getattr(config, 'USE_PSEUDO_LABELING', False):
         logger.info("[Augmentation] Applying pseudo-labeling to training data...")
         # Use the first model type as the teacher for pseudo-labeling
@@ -141,13 +161,89 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
     model_types = ['lstm', 'rnn', 'mlp', 'lgbm']
     results = {}
     trained_models = []
+    cv_fold_preds_first_five = []
+    cv_fold_preds_sixth = []
+    cv_fold_labels = []
+    per_fold_models = []  # List of lists: per fold, list of models (one per type)
+    # Per-fold model storage for ensembling
+    n_folds = getattr(config, 'CV_FOLDS', 5)
+    fold_models_by_type = {mt: [] for mt in model_types}
+    fold_val_idx = []  # Store validation indices for each fold
+    # First, run cross-validation for each model type and store per-fold models
     for model_type in model_types:
         logger.info(f"[Pipeline] Running model: {model_type.upper()}")
         try:
-            model = get_model(model_type, input_shape=X_test.shape[1:])
+            if model_type == 'lgbm':
+                model = get_model(model_type)
+            else:
+                model = get_model(model_type, input_shape=X_test.shape[1:])
             X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
-            model.fit(X_train, y_train, epochs=config.EPOCHS_FINAL, batch_size=config.BATCH_SIZE, validation_split=config.VALIDATION_SPLIT, verbose=0)
+            if hasattr(model, 'cross_validate'):
+                from sklearn.model_selection import KFold
+                kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+                fold_models = []
+                fold_preds_first = []
+                fold_preds_sixth = []
+                fold_labels = []
+                for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+                    # Train model on this fold
+                    X_tr, X_val = X_train[train_idx], X_train[val_idx]
+                    if isinstance(y_train, dict):
+                        y_tr = {k: v[train_idx] for k, v in y_train.items()}
+                        y_val = {k: v[val_idx] for k, v in y_train.items()}
+                    elif isinstance(y_train, (list, tuple)):
+                        y_tr = [v[train_idx] for v in y_train]
+                        y_val = [v[val_idx] for v in y_train]
+                    else:
+                        y_tr, y_val = y_train[train_idx], y_train[val_idx]
+                    def log_shape_info(arr, name):
+                        import numpy as np
+                        if isinstance(arr, (np.ndarray,)):
+                            logger.info(f"[Pipeline][{model_type.upper()}][{name}] shape: {arr.shape}, dtype: {arr.dtype}")
+                        elif hasattr(arr, 'shape'):
+                            logger.info(f"[Pipeline][{model_type.upper()}][{name}] shape: {arr.shape}")
+                        else:
+                            logger.info(f"[Pipeline][{model_type.upper()}][{name}] type: {type(arr)}")
+                    log_shape_info(X_tr, 'X_tr')
+                    log_shape_info(y_tr, 'y_tr')
+                    if model_type == 'lgbm':
+                        fold_model = get_model(model_type)
+                        fold_model.fit(X_tr, y_tr)
+                    else:
+                        fold_model = get_model(model_type, input_shape=X_tr.shape[1:])
+                        fold_model.fit(X_tr, y_tr, epochs=config.EPOCHS_FINAL, batch_size=config.BATCH_SIZE, validation_split=config.VALIDATION_SPLIT, verbose=0)
+                    fold_models.append(fold_model)
+                    # Predict on validation set for this fold
+                    preds = fold_model.model.predict(X_val, verbose=0)
+                    if isinstance(preds, (list, tuple)):
+                        pred_first = np.argmax(preds[0], axis=-1) + 1
+                        pred_sixth = np.argmax(preds[1], axis=-1) + 1
+                    else:
+                        pred_first = np.argmax(preds, axis=-1) + 1
+                        pred_sixth = None
+                    fold_preds_first.append(pred_first)
+                    fold_preds_sixth.append(pred_sixth)
+                    fold_labels.append(f"{model_type.upper()} CV{fold_idx+1}")
+                    if model_type == model_types[0]:
+                        # Only store val_idx once (same split for all models)
+                        if len(fold_val_idx) < n_folds:
+                            fold_val_idx.append(val_idx)
+                fold_models_by_type[model_type] = fold_models
+                # Store predictions for plotting (not ensembled yet)
+                if model_type == model_types[0]:
+                    cv_fold_preds_first_five = fold_preds_first
+                    cv_fold_preds_sixth = fold_preds_sixth
+                    cv_fold_labels = fold_labels
+            # Fit final model on all data
+            log_shape_info(X_train, 'X_train')
+            log_shape_info(y_train, 'y_train')
+            if model_type == 'lgbm':
+                model.fit(X_train, y_train)
+            else:
+                model.fit(X_train, y_train, epochs=config.EPOCHS_FINAL, batch_size=config.BATCH_SIZE, validation_split=config.VALIDATION_SPLIT, verbose=0)
             eval_result = model.evaluate(X_test, y_test, verbose=0)
+            log_shape_info(X_test, 'X_test')
+            log_shape_info(y_test, 'y_test')
             results[model_type] = eval_result
             trained_models.append(model)
             # Save model predictions for best-match selection
@@ -163,6 +259,39 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
         except Exception as e:
             logger.error(f"[Pipeline] Error running model {model_type}: {e}")
     logger.info(f"[Pipeline] All model results: {results}")
+
+    # Per-fold ensembling: for each fold, ensemble the models trained in that fold and predict on the fold's validation set
+    per_fold_ensemble_preds_first = []
+    per_fold_ensemble_preds_sixth = []
+    for fold_idx in range(n_folds):
+        fold_models = [fold_models_by_type[mt][fold_idx] for mt in model_types if len(fold_models_by_type[mt]) == n_folds]
+        if not fold_models:
+            continue
+        val_idx = fold_val_idx[fold_idx]
+        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+        X_val = X_train[val_idx]
+        from ensemble.ensemble_predict import ensemble_predict
+        # Check all models can predict
+        can_predict = True
+        for i, m in enumerate(fold_models):
+            try:
+                _ = m.model.predict(X_val[:1], verbose=0)
+            except Exception as e:
+                logger.warning(f"[Per-Fold Ensemble] Model {i} ({type(m)}) failed to predict: {e}")
+                can_predict = False
+        if not can_predict:
+            logger.warning(f"[Per-Fold Ensemble] Skipping fold {fold_idx+1} due to model prediction failure.")
+            continue
+        try:
+            ensemble_first, ensemble_sixth = ensemble_predict(fold_models, X_val, config)
+            pred_first = np.argmax(ensemble_first, axis=-1) + 1
+            pred_sixth = np.argmax(ensemble_sixth, axis=-1) + 1
+            per_fold_ensemble_preds_first.append(pred_first)
+            per_fold_ensemble_preds_sixth.append(pred_sixth)
+            cv_fold_labels.append(f"Ensemble CV{fold_idx+1}")
+        except Exception as e:
+            logger.warning(f"[Per-Fold Ensemble] Skipping fold {fold_idx+1} due to ensemble_predict error: {e}")
+            continue
 
     # Ensemble predictions from all models
     try:
@@ -212,6 +341,12 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
     # Compute final predictions from ensemble (class indices, 1-based)
     final_pred_first_five = np.argmax(ensemble_first, axis=-1) + 1
     final_pred_sixth = np.argmax(ensemble_sixth, axis=-1) + 1
+
+    # Add per-fold ensemble predictions to rounds for plotting
+    # Use only per-fold ensemble predictions and the final ensemble for plotting
+    rounds_first_five = per_fold_ensemble_preds_first + [final_pred_first_five]
+    rounds_sixth = per_fold_ensemble_preds_sixth + [final_pred_sixth]
+    round_labels = [f"Ensemble CV{idx+1}" for idx in range(len(per_fold_ensemble_preds_first))] + ['Final']
 
     # Select the best prediction by highest number of balls matched
     def count_matches(pred_first, pred_sixth, y_true_first_five, y_true_sixth):
@@ -263,9 +398,10 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
             tracker.log_artifact(artifact_path)
 
     # Prepare data for multi-round plots
-    rounds_first_five = [final_pred_first_five]  # Add more rounds if available
-    rounds_sixth = [final_pred_sixth]            # Add more rounds if available
-    round_labels = ['Final']
+    # Add CV fold predictions to rounds for plotting
+    rounds_first_five = cv_fold_preds_first_five + [final_pred_first_five]
+    rounds_sixth = cv_fold_preds_sixth + [final_pred_sixth]
+    round_labels = cv_fold_labels + ['Final']
     # Use previous predictions if available
     def valid_prev_pred(pred):
         return pred is not None and hasattr(pred, 'ndim') and pred.ndim >= 2
@@ -302,29 +438,24 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None):
             ),
             'multi_round_powerball_distribution.png'
         )
+        # Combine all six balls for std plot
+        y_true_all = np.concatenate([y_true_first_five, y_true_sixth.reshape(-1, 1)], axis=1)
+        rounds_all = [np.concatenate([r5, r6.reshape(-1, 1)], axis=1) for r5, r6 in zip(rounds_first_five, rounds_sixth)]
+        prev_pred_all = None
+        if prev_pred_first_five is not None and prev_pred_sixth is not None:
+            prev_pred_all = np.concatenate([prev_pred_first_five, prev_pred_sixth.reshape(-1, 1)], axis=1)
+        # Plot true vs predicted std for all balls side by side
         log_plot_and_artifact(
-            plot_multi_round_true_std,
+            plot_multi_round_true_pred_std,
             dict(
-                y_true=y_true_first_five,
-                rounds_pred_list=rounds_first_five,
-                prev_pred=prev_pred_first_five,
-                num_balls=5,
+                y_true=y_true_all,
+                pred_rounds_list=rounds_all,
+                prev_true=prev_pred_all,  # previous true values (if available)
+                prev_pred=prev_pred_all,  # previous pred values (if available)
                 round_labels=round_labels,
                 prev_label='Previous'
             ),
-            'multi_round_true_std.png'
-        )
-        log_plot_and_artifact(
-            plot_multi_round_pred_std,
-            dict(
-                y_true=y_true_first_five,
-                rounds_pred_list=rounds_first_five,
-                prev_pred=prev_pred_first_five,
-                num_balls=5,
-                round_labels=round_labels,
-                prev_label='Previous'
-            ),
-            'multi_round_pred_std.png'
+            'multi_round_true_pred_std.png'
         )
         log_plot_and_artifact(
             plot_multi_round_kl_divergence,
