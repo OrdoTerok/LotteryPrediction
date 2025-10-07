@@ -68,7 +68,7 @@ def save_to_file(df, file_path="data_sets/base_dataset.csv"):
     except Exception as e:
         logger.error(f"Error saving DataFrame to CSV: {e}")
 
-def prepare_data_for_lstm(df: pd.DataFrame, look_back: int):
+def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None):
     """
     Prepare data for LSTM model input, generating sequences and one-hot targets.
 
@@ -88,29 +88,52 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int):
     """
     import config.config as config
     df = df.sort_values(by='Draw Date')
-    winning_numbers = df['Winning Numbers'].str.split().apply(lambda x: [int(i) for i in x]).values
+    def safe_split_and_int(x):
+        if isinstance(x, str):
+            try:
+                return [int(i) for i in x.split()]
+            except Exception:
+                return []
+        elif isinstance(x, (list, tuple)):
+            try:
+                return [int(i) for i in x]
+            except Exception:
+                return []
+        else:
+            return []
+
+    winning_numbers = df['Winning Numbers'].apply(safe_split_and_int).values
     X = []
     y_first_five = []
     y_sixth = []
     num_first = 5
     num_first_classes = 69
     num_sixth_classes = 26
-    meta_cols = [col for col in df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
+    # Use provided meta_cols or infer from df
+    if meta_cols is None:
+        meta_cols = [col for col in df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
+    meta_dim = len(meta_cols)
     for i in range(len(winning_numbers) - look_back):
         window_feats = []
         for j in range(i, i + look_back):
             base = np.array(winning_numbers[j])
-            meta = []
-            if meta_cols:
-                meta_row = df.iloc[j][meta_cols] if j < len(df) else None
-                if meta_row is not None:
-                    meta = meta_row.values.astype(np.float32)
-            if len(meta) > 0:
-                window_feats.append(np.concatenate([base, meta]))
-            else:
-                window_feats.append(base)
-        X.append(np.stack(window_feats))
+            # Always build meta feature vector of correct length and order
+            meta = np.zeros(meta_dim, dtype=np.float32)
+            if meta_dim > 0 and j < len(df):
+                for idx, col in enumerate(meta_cols):
+                    if col in df.columns:
+                        val = df.iloc[j][col]
+                        meta[idx] = val if not pd.isnull(val) else 0.0
+            # Log feature vector shape for diagnostics
+            full_feat = np.concatenate([base, meta])
+            if i == 0 and j == 0:
+                print(f"[prepare_data_for_lstm] Feature vector shape: {full_feat.shape} (base: {base.shape}, meta: {meta.shape})")
+            window_feats.append(full_feat)
         target_numbers = winning_numbers[i + look_back]
+        # Skip if not enough numbers
+        if not isinstance(target_numbers, (list, np.ndarray)) or len(target_numbers) < num_first + 1:
+            continue
+        X.append(np.stack(window_feats))
         first_five_onehot = np.zeros((num_first, num_first_classes), dtype=np.float32)
         for j, n in enumerate(target_numbers[:num_first]):
             if 1 <= n <= num_first_classes:
@@ -129,7 +152,6 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int):
         # If (samples, features), reshape to (samples, 1, features)
         X_arr = X_arr[:, np.newaxis, :]
     assert X_arr.ndim == 3, f"LSTM input X must be 3D, got shape {X_arr.shape}"
-    return X_arr, (y_first_five_arr, y_sixth_arr)
     return X_arr, (y_first_five_arr, y_sixth_arr)
 # data/preprocessing.py
 # Functions for data cleaning, feature engineering, and preprocessing.

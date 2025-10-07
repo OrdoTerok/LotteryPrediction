@@ -18,16 +18,23 @@ class LSTMModel:
         Returns:
             float: mean KL divergence to uniform
         """
-        from util.metrics import kl_to_uniform
+        from core.metrics import kl_to_uniform
         import numpy as np
         # If probs is a list (multi-output), compute KL for each and average
         if isinstance(probs, (list, tuple)):
-            return float(np.mean([self.kl_to_uniform_probs(p) for p in probs]))
+            vals = [self.kl_to_uniform_probs(p) for p in probs]
+            if len(vals) == 0:
+                logging.getLogger(__name__).warning("[LSTMModel] kl_to_uniform_probs: empty input list, returning np.nan.")
+                return float('nan')
+            return float(np.mean(vals))
         # If probs is a numpy array
         if hasattr(probs, 'ndim'):
             if probs.ndim == 3:
-                # For multi-ball, average over balls
-                return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+                vals = [kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]
+                if len(vals) == 0:
+                    logging.getLogger(__name__).warning("[LSTMModel] kl_to_uniform_probs: empty 3D input, returning np.nan.")
+                    return float('nan')
+                return float(np.mean(vals))
             return float(kl_to_uniform(probs))
         # Fallback: cannot compute
         raise ValueError(f"Unsupported type for probs in kl_to_uniform_probs: {type(probs)}")
@@ -367,7 +374,10 @@ class LSTMModel:
                 intersection = tf.reduce_sum(y_true_bin * y_pred_bin, axis=[1,2])
                 union = tf.reduce_sum(tf.cast((y_true_bin + y_pred_bin) > 0, tf.float32), axis=[1,2])
                 jaccard = 1.0 - intersection / (union + 1e-8)
-                return tf.reduce_mean(jaccard)
+                jaccard = tf.where(tf.math.is_finite(jaccard), jaccard, tf.zeros_like(jaccard))
+                out = tf.reduce_mean(jaccard)
+                out = tf.where(tf.math.is_finite(out), out, 0.0)
+                return out
 
             def duplicate_penalty(y_pred):
                 # Vectorized duplicate penalty: count duplicates in each row
@@ -409,7 +419,9 @@ class LSTMModel:
                     meta_features = y_true._keras_mask.meta_features
                 anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
                 anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = tf.where(tf.math.is_finite(total), total, 0.0)
+                return total
 
             def sixth_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
@@ -424,7 +436,9 @@ class LSTMModel:
                     meta_features = y_true._keras_mask.meta_features
                 anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
                 anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = tf.where(tf.math.is_finite(total), total, 0.0)
+                return total
 
             model.compile(
                 optimizer=optimizer,

@@ -182,13 +182,28 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
         n_classes_list = n_classes
     def get_dist_matrix(arr):
         # arr: (n_samples, num_balls)
-        return np.stack([
-            np.bincount(arr[:, i]-1, minlength=n_classes_list[i]) / arr.shape[0]
-            for i in range(num_balls)
-        ], axis=0)
+        dists = []
+        max_len = max(n_classes_list)
+        for i in range(arr.shape[1]):
+            if i >= len(n_classes_list):
+                logger.warning(f"[plot_utils_std] Skipping column {i}: n_classes_list missing entry (len={len(n_classes_list)})")
+                continue
+            dist = np.bincount(arr[:, i]-1, minlength=n_classes_list[i]) / arr.shape[0]
+            # Pad dist to max_len with zeros if needed
+            if dist.shape[0] < max_len:
+                dist = np.pad(dist, (0, max_len - dist.shape[0]), mode='constant')
+            dists.append(dist)
+        # Now all dists have shape (max_len,)
+        return np.stack(dists, axis=0)
     true_dists = get_dist_matrix(y_true)
+    if true_dists is None:
+        logger.warning("[plot_utils_std] KL plot skipped: true_dists could not be computed due to shape mismatch.")
+        return
     if prev_pred is not None:
         prev_dists = get_dist_matrix(prev_pred)
+        if prev_dists is None:
+            logger.warning("[plot_utils_std] KL plot skipped: prev_dists could not be computed due to shape mismatch.")
+            return
         prev_kls = np.sum(true_dists * np.log(np.clip(true_dists / np.clip(prev_dists, 1e-12, 1), 1e-12, 1)), axis=1)
         kls.append(prev_kls)
         labels.append(prev_label)
@@ -208,6 +223,9 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
     for idx, y_pred in enumerate(rounds_pred_list):
         logger.info(f"[PLOT DIAG] plot_multi_round_kl_divergence round {idx+1} y_pred (first 5): %s", y_pred[:5])
         pred_dists = get_dist_matrix(y_pred)
+        if pred_dists is None:
+            logger.warning(f"[plot_utils_std] KL plot skipped for round {idx+1}: pred_dists could not be computed due to shape mismatch.")
+            continue
         # Compute KL for each ball, handling per-ball n_classes
         kl = np.zeros(num_balls)
         for i in range(num_balls):
@@ -218,7 +236,7 @@ def plot_multi_round_kl_divergence(y_true, rounds_pred_list, prev_pred=None, num
                 kl[i] = np.nan
         kls.append(kl)
         if round_labels and idx < len(round_labels):
-            label = round_labels[idx]
+                label = str(round_labels[idx])  # Ensure label is a string
         else:
             label = f'Round {idx+1}'
         labels.append(make_unique(label))

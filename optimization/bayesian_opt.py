@@ -17,7 +17,7 @@ All Bayesian optimization logic is contained here.
 """
 import optuna # type: ignore
 import numpy as np
-from util import model_utils
+from core import model_utils
 import config.config as config
 
 # Define the search space for meta-parameters

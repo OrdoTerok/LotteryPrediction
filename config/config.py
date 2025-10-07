@@ -57,7 +57,7 @@ ITERATIVE_STACKING_ROUNDS = 3
 
 # --- Ensembling strategy ---
 # Options: 'average', 'weighted', 'stacking'
-ENSEMBLE_STRATEGY = 'average'
+ENSEMBLE_STRATEGY = 'weighted'
 
 # --- Cross-validation ---
 # Set CV_FOLDS = 1 for no cross-validation (standard train/test split)

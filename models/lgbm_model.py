@@ -10,6 +10,32 @@ from models.base_model import BaseModel
 import logging
 
 class LightGBMModel(BaseModel):
+    def kl_to_uniform_probs(self, probs):
+        """
+        Compute KL divergence to uniform for predicted probabilities.
+        Args:
+            probs: np.ndarray or list of np.ndarray, shape (n_samples, n_classes) or (n_samples, num_balls, n_classes)
+        Returns:
+            float: mean KL divergence to uniform
+        """
+        from core.metrics import kl_to_uniform
+        import numpy as np
+        import logging
+        if isinstance(probs, (list, tuple)):
+            vals = [self.kl_to_uniform_probs(p) for p in probs]
+            if len(vals) == 0:
+                logging.getLogger(__name__).warning("[LightGBMModel] kl_to_uniform_probs: empty input list, returning np.nan.")
+                return float('nan')
+            return float(np.mean(vals))
+        if hasattr(probs, 'ndim'):
+            if probs.ndim == 3:
+                vals = [kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]
+                if len(vals) == 0:
+                    logging.getLogger(__name__).warning("[LightGBMModel] kl_to_uniform_probs: empty 3D input, returning np.nan.")
+                    return float('nan')
+                return float(np.mean(vals))
+            return float(kl_to_uniform(probs))
+        raise ValueError(f"Unsupported type for probs in kl_to_uniform_probs: {type(probs)}")
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
         Perform K-fold cross-validation. Returns list of dicts per fold: {'eval': eval_result, 'pred_first': ..., 'pred_sixth': ...}
@@ -154,11 +180,19 @@ class LightGBMModel(BaseModel):
         # Automatically flatten 3D input to 2D if needed
         if X.ndim == 3:
             X = X.reshape(X.shape[0], -1)
-        if feature_names is not None and not isinstance(X, pd.DataFrame):
-            if len(feature_names) == X.shape[1]:
+        # Feature count consistency check
+        expected_features = self.models_first[0].n_features_in_ if hasattr(self.models_first[0], 'n_features_in_') else None
+        if expected_features is not None and X.shape[1] != expected_features:
+            logger.error(f"[LGBM][ERROR] Feature count mismatch: model expects {expected_features}, but input has {X.shape[1]} features. Skipping prediction.")
+            return None
+        # Always pass DataFrame with feature names if available
+        import pandas as pd
+        if feature_names is not None and len(feature_names) == X.shape[1]:
+            if not isinstance(X, pd.DataFrame):
                 X = pd.DataFrame(X, columns=feature_names)
-            else:
-                X = pd.DataFrame(X)
+        elif hasattr(self.models_first[0], 'feature_name_') and len(self.models_first[0].feature_name_) == X.shape[1]:
+            if not isinstance(X, pd.DataFrame):
+                X = pd.DataFrame(X, columns=self.models_first[0].feature_name_)
         preds = []
         for idx, model in enumerate(self.models_first):
             try:
@@ -219,12 +253,20 @@ class LightGBMModel(BaseModel):
             logger = logging.getLogger(__name__)
             logger.error(f"[LGBM][ERROR] Single-sample evaluation detected (shape={X.shape}). This is not allowed to avoid LightGBM instability.")
             raise ValueError(f"Single-sample evaluation is not allowed. Input shape: {X.shape}")
+        # Feature count consistency check
+        expected_features = self.models_first[0].n_features_in_ if hasattr(self.models_first[0], 'n_features_in_') else None
+        if expected_features is not None and X.shape[1] != expected_features:
+            logger.error(f"[LGBM][ERROR] Feature count mismatch: model expects {expected_features}, but input has {X.shape[1]} features. Skipping evaluation.")
+            return None
         import logging
         logger = logging.getLogger(__name__)
         logger.info("  [LGBM] Starting evaluation...")
         # Returns log loss for each ball and sixth
         from sklearn.metrics import log_loss
         first_five_pred, sixth_pred = self.predict(X, feature_names=feature_names, **kwargs)
+        if first_five_pred is None or sixth_pred is None:
+            logger.error("[LGBM][ERROR] Prediction failed due to feature mismatch or other error. Skipping evaluation.")
+            return None
         y_first, y_sixth = y
         if y_first.ndim == 3:
             y_first = np.argmax(y_first, axis=-1)

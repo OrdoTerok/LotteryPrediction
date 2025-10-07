@@ -206,7 +206,7 @@ def fitness_func(train_df, test_df):
 		model = get_model(model_type, input_shape=input_shape)
 
 		# Train model
-		from util.model_utils import train_model
+		from core.model_utils import train_model
 		train_model(model, X_train, y_train, epochs=3, batch_size=32, validation_split=0.1, verbose=0)
 
 		# Evaluate model on test set
@@ -334,7 +334,7 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 			from models.model_factory import get_model
 			input_shape = X_train.shape[1:]
 			model = get_model(model_type, input_shape=input_shape)
-			from util.model_utils import train_model
+			from core.model_utils import train_model
 			train_model(model, X_train, y_train, epochs=3, batch_size=32, validation_split=0.1, verbose=0)
 			eval_result = model.evaluate(X_test, y_test, verbose=0)
 			if isinstance(eval_result, (list, tuple)):

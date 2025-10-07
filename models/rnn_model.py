@@ -6,10 +6,18 @@ def kl_to_uniform_probs(self, probs):
     Returns:
        float: mean KL divergence to uniform
     """
-    from util.metrics import kl_to_uniform
+    from core.metrics import kl_to_uniform
     import numpy as np
-    if probs.ndim == 3:
-        return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+    # Accept list/tuple and convert to np.array if needed
+    if isinstance(probs, (list, tuple)):
+        probs = np.array(probs)
+    if hasattr(probs, 'ndim') and probs.ndim == 3:
+        vals = [kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]
+        if len(vals) == 0:
+            import logging
+            logging.getLogger(__name__).warning("[RNNModel] kl_to_uniform_probs: empty 3D input, returning np.nan.")
+            return float('nan')
+        return float(np.mean(vals))
     return float(kl_to_uniform(probs))
 
 @staticmethod
@@ -88,10 +96,31 @@ class RNNModel:
         Returns:
            float: mean KL divergence to uniform
         """
-        from util.metrics import kl_to_uniform
+        from core.metrics import kl_to_uniform
         import numpy as np
-        if probs.ndim == 3:
-            return float(np.mean([kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]))
+        # Accept list/tuple and convert to np.array if possible
+        import logging
+        import numpy as np
+        if isinstance(probs, (list, tuple)):
+            # If it's a list of arrays, try to stack
+            if all(hasattr(p, 'shape') for p in probs):
+                try:
+                    probs = np.stack(probs, axis=0)
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"[RNNModel] kl_to_uniform_probs: Could not stack list of arrays, error: {e}. Returning np.nan.")
+                    return float('nan')
+            else:
+                try:
+                    probs = np.array(probs)
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"[RNNModel] kl_to_uniform_probs: Could not convert list/tuple to np.array, error: {e}. Returning np.nan.")
+                    return float('nan')
+        if hasattr(probs, 'ndim') and probs.ndim == 3:
+            vals = [kl_to_uniform(probs[:, i, :]) for i in range(probs.shape[1])]
+            if len(vals) == 0:
+                logging.getLogger(__name__).warning("[RNNModel] kl_to_uniform_probs: empty 3D input, returning np.nan.")
+                return float('nan')
+            return float(np.mean(vals))
         return float(kl_to_uniform(probs))
     def cross_validate(self, X, y, cv=5, **kwargs):
         """
@@ -217,7 +246,11 @@ class RNNModel:
             def jaccard_loss(y_true, y_pred):
                 intersection = K.sum(K.minimum(y_true, y_pred), axis=-1)
                 union = K.sum(K.maximum(y_true, y_pred), axis=-1)
-                return 1.0 - K.mean(intersection / (union + 1e-8))
+                jaccard = 1.0 - intersection / (union + 1e-8)
+                jaccard = tf.where(tf.math.is_finite(jaccard), jaccard, tf.zeros_like(jaccard))
+                out = K.mean(jaccard)
+                out = tf.where(tf.math.is_finite(out), out, 0.0)
+                return out
 
             def duplicate_penalty(y_pred):
                 # Avoid division by zero for single-ball predictions (e.g., sixth ball)
@@ -256,7 +289,9 @@ class RNNModel:
                     meta_features = y_true._keras_mask.meta_features
                 anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
                 anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = tf.where(tf.math.is_finite(total), total, 0.0)
+                return total
 
             def sixth_loss(y_true, y_pred):
                 ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
@@ -271,7 +306,9 @@ class RNNModel:
                     meta_features = y_true._keras_mask.meta_features
                 anti_copy_pen = anti_copying_penalty(y_pred, meta_features)
                 anti_copy_weight = getattr(config, 'ANTI_COPY_PENALTY_WEIGHT', 1.0)
-                return ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = ce + penalty_weight * penalty + entropy_penalty_weight * entropy_pen + jaccard_weight * jac + duplicate_penalty_weight * dup_pen + 2.0 * div_pen + anti_copy_weight * anti_copy_pen
+                total = tf.where(tf.math.is_finite(total), total, 0.0)
+                return total
 
             model.compile(
                 optimizer=opt,
@@ -329,7 +366,7 @@ class RNNModel:
         # Apply label smoothing if set
         label_smoothing = getattr(self, 'label_smoothing', None)
         if label_smoothing is not None and label_smoothing > 0.0:
-            from util.metrics import smooth_labels
+            from core.metrics import smooth_labels
             if isinstance(y, dict):
                 y = {k: smooth_labels(v, label_smoothing) for k, v in y.items()}
             elif isinstance(y, (list, tuple)):
@@ -339,7 +376,7 @@ class RNNModel:
         # Apply mix_uniform if set
         mix_uniform_prob = getattr(self, 'mix_uniform_prob', None)
         if mix_uniform_prob is not None and mix_uniform_prob > 0.0:
-            from util.metrics import mix_uniform
+            from core.metrics import mix_uniform
             if isinstance(y, dict):
                 y = {k: mix_uniform(v, mix_uniform_prob) for k, v in y.items()}
             elif isinstance(y, (list, tuple)):

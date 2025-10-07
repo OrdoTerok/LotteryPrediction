@@ -92,6 +92,32 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
         prev_label: label for previous predictions
     """
     palette = plt.get_cmap('tab10')
+    import numpy as np
+    # Convert all y_pred in rounds_pred_list to numpy arrays
+    # Normalize all y_pred in rounds_pred_list to 2D arrays of shape (n_samples, n_balls)
+    normalized_rounds = []
+    for idx, y_pred in enumerate(rounds_pred_list):
+        arr = np.array(y_pred)
+        # If arr is a list of arrays, try to stack
+        if isinstance(y_pred, list) and len(y_pred) > 0 and hasattr(y_pred[0], 'shape'):
+            try:
+                arr = np.stack(y_pred, axis=0)
+            except Exception as e:
+                logger.warning(f"[PLOT DIAG] Could not stack y_pred for round {idx+1}: {e}. Skipping this round.")
+                continue
+        # If arr is 3D, take the first slice along axis 0
+        if arr.ndim == 3:
+            logger.warning(f"[PLOT DIAG] y_pred for round {idx+1} is 3D with shape {arr.shape}. Taking first slice along axis 0 for plotting.")
+            arr = arr[0]
+        # If arr is 1D, reshape to (n_samples, 1)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        # If arr is not 2D, skip
+        if arr.ndim != 2:
+            logger.warning(f"[PLOT DIAG] y_pred for round {idx+1} is not 2D after normalization: shape={arr.shape}. Skipping this round.")
+            continue
+        normalized_rounds.append(arr)
+    rounds_pred_list = normalized_rounds
     for i in range(num_balls):
         logger.info(f"[PLOT DIAG] Ball {i+1} y_true (first 5): %s", y_true[:5, i])
         prev_pred_valid = prev_pred is not None and hasattr(prev_pred, 'ndim') and prev_pred.ndim >= 2
@@ -133,7 +159,32 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
             plt.bar(x + offsets[1], prev_counts, width=width, color='black', label=prev_label, align='center')
             idx_offset += 1
         # Vectorized bincounts for all valid rounds for this ball
-        round_counts_arr = np.stack([np.bincount(y_pred[:, i] - 1, minlength=n_classes) for y_pred in valid_rounds], axis=0)
+        round_counts = []
+        for idx, y_pred in enumerate(valid_rounds):
+            try:
+                # Ensure y_pred[:, i] is a 1D array of integers
+                col = y_pred[:, i]
+                if not isinstance(col, np.ndarray):
+                    col = np.array(col)
+                # If col is 2D with shape (n_samples, 1), flatten it
+                if col.ndim == 2 and col.shape[1] == 1:
+                    col = col.ravel()
+                # If col is 2D with shape (n_samples, n_balls), this is likely a bug in the input
+                elif col.ndim == 2:
+                    logger.warning(f"[PLOT DIAG] Ball {i+1} round {idx+1} y_pred[:, {i}] is 2D with shape {col.shape} (likely (n_samples, n_balls)). Skipping this round for this ball.")
+                    continue
+                if col.ndim != 1:
+                    logger.warning(f"[PLOT DIAG] Ball {i+1} round {idx+1} y_pred[:, {i}] is not 1D after flattening: shape={col.shape}. Skipping.")
+                    continue
+                col = col.astype(int)
+                round_counts.append(np.bincount(col - 1, minlength=n_classes))
+            except Exception as e:
+                logger.warning(f"[PLOT DIAG] Ball {i+1} round {idx+1} y_pred[:, {i}] could not be processed for bincount: {e}. Skipping.")
+                continue
+        if not round_counts:
+            logger.warning(f"[PLOT DIAG] Ball {i+1}: No valid round predictions for bincount. Skipping plot for this ball.")
+            continue
+        round_counts_arr = np.stack(round_counts, axis=0)
         used_labels = set()
         def make_unique(label):
             orig = label
@@ -145,6 +196,7 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
             return label
         for idx in range(round_counts_arr.shape[0]):
             label = valid_labels[idx] if valid_labels and idx < len(valid_labels) else f'Round {idx+1}'
+            label = str(label)  # Ensure label is a string
             label = make_unique(label)
             color = palette((idx + 2) % 10)
             plt.bar(x + offsets[idx + idx_offset], round_counts_arr[idx], width=width, color=color, label=label, align='center')
@@ -152,5 +204,5 @@ def plot_multi_round_ball_distributions(y_true, rounds_pred_list, prev_pred=None
         plt.xlabel('Number')
         plt.ylabel('Count')
         plt.legend()
-        plt.tight_layout()
-        plt.show()
+    plt.tight_layout()
+    plt.show()

@@ -1,13 +1,5 @@
-
-# Suppress TensorFlow and Keras warnings and info messages
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-import warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='keras')
-warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
-warnings.filterwarnings('ignore', category=FutureWarning)
-
-# --- Modular Imports ---
+import json
 import sys
 import argparse
 import config.config as config
@@ -16,7 +8,15 @@ from core.log_utils import setup_logging
 from pipeline.experiment_tracker import ExperimentTracker
 import cProfile
 import datetime
-import os
+
+# Suppress TensorFlow and Keras warnings and info messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='keras')
+warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
+warnings.filterwarnings('ignore', category=FutureWarning)
+
+
 
 
 def main():
@@ -76,11 +76,34 @@ def main():
     except ImportError:
         logger.error("Could not import run_pipeline from pipeline.run_pipeline. Please check your project structure.")
         raise
-    run_pipeline(config)
+    best_pred = None
+    best_entry = run_pipeline(config, best_pred=best_pred)
     profiler.disable()
     profiler.dump_stats(profile_path)
     logger.info(f"[Pipeline] Profiling complete.")
     logger.info("[Pipeline] Pipeline complete.")
+    # Save the best prediction to results_predictions_history.json
+    try:
+        from core.log_utils import save_json
+        history_path = os.path.join(os.path.dirname(__file__), 'data_sets', 'results_predictions_history.json')
+        if os.path.exists(history_path):
+            with open(history_path, 'r') as f:
+                history_data = json.load(f)
+        else:
+            history_data = []
+        # Validate best_entry before appending
+        required_fields = ['timestamp', 'source', 'first_five', 'sixth', 'metrics', 'matches']
+        is_complete = all(
+            best_entry.get(field) is not None for field in required_fields
+        )
+        if is_complete:
+            history_data.append(best_entry)
+            save_json(history_data, history_path)
+            logger.info(f"Saved best prediction to {history_path}")
+        else:
+            logger.warning(f"Skipped saving incomplete best prediction: {best_entry}")
+    except Exception as e:
+        logger.error(f"Failed to save best prediction to results_predictions_history.json: {e}")
     # Clean up logs: keep only the 10 most recent log files
     try:
         from util.cleanup_logs import cleanup_logs
@@ -88,6 +111,13 @@ def main():
         logger.info("[Pipeline] Log cleanup complete.")
     except Exception as e:
         logger.warning(f"[Pipeline] Log cleanup failed: {e}")
+    # Clean up results_predictions_history.json: keep only the 10 most recent entries
+    try:
+        from util.cleanup_results_history import cleanup_results_history
+        cleanup_results_history()
+        logger.info("[Pipeline] Results history cleanup complete.")
+    except Exception as e:
+        logger.warning(f"[Pipeline] Results history cleanup failed: {e}")
 
 if __name__ == "__main__":
     main()

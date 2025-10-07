@@ -2,9 +2,9 @@
 Logging utilities for LotteryPrediction.
 """
 import logging
-import datetime
 import sys
 import io
+import json
 
 class SilentLogger:
     """
@@ -60,3 +60,24 @@ def setup_logging(log_filename=None):
 
 def get_logger():
     return logging.getLogger()
+
+def save_json(data, filename):
+    """Save a dictionary or list to a JSON file."""
+    import numpy as np
+    def convert(obj):
+        if isinstance(obj, dict):
+            return {k: convert(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert(v) for v in obj]
+        elif isinstance(obj, tuple):
+            return tuple(convert(v) for v in obj)
+        elif isinstance(obj, (np.integer, np.int32, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
+    with open(filename, 'w') as f:
+        json.dump(convert(data), f, indent=2)
