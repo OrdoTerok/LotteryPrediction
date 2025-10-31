@@ -68,7 +68,7 @@ def save_to_file(df, file_path="data_sets/base_dataset.csv"):
     except Exception as e:
         logger.error(f"Error saving DataFrame to CSV: {e}")
 
-def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None):
+def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None, use_cache=True, preprocessing_cache=None):
     """
     Prepare data for LSTM model input, generating sequences and one-hot targets.
 
@@ -78,6 +78,12 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None):
         DataFrame with at least 'Draw Date' and 'Winning Numbers' columns.
     look_back : int
         Number of previous draws to use as input sequence.
+    meta_cols : list, optional
+        List of meta column names to include as features.
+    use_cache : bool, optional
+        Whether to use caching (default True).
+    preprocessing_cache : PreprocessingCache, optional
+        Cache instance to use. If None and use_cache=True, creates a default cache.
 
     Returns
     -------
@@ -87,6 +93,17 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None):
         Tuple of (first_five, sixth) one-hot encoded targets.
     """
     import config.config as config
+    
+    # Check cache first
+    if use_cache:
+        if preprocessing_cache is None:
+            from core.cache import PreprocessingCache
+            preprocessing_cache = PreprocessingCache()
+        
+        cached_result = preprocessing_cache.get_prepared_data(df, look_back, meta_cols)
+        if cached_result is not None:
+            return cached_result
+    
     df = df.sort_values(by='Draw Date')
     def safe_split_and_int(x):
         if isinstance(x, str):
@@ -152,7 +169,14 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None):
         # If (samples, features), reshape to (samples, 1, features)
         X_arr = X_arr[:, np.newaxis, :]
     assert X_arr.ndim == 3, f"LSTM input X must be 3D, got shape {X_arr.shape}"
-    return X_arr, (y_first_five_arr, y_sixth_arr)
+    
+    result = (X_arr, (y_first_five_arr, y_sixth_arr))
+    
+    # Cache the result
+    if use_cache and preprocessing_cache is not None:
+        preprocessing_cache.set_prepared_data(df, look_back, meta_cols, X_arr, (y_first_five_arr, y_sixth_arr))
+    
+    return result
 # data/preprocessing.py
 # Functions for data cleaning, feature engineering, and preprocessing.
 

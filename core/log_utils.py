@@ -39,23 +39,56 @@ def suppress_console():
     sys.stdout = _DevNull()
     sys.stderr = _DevNull()
 
-def setup_logging(log_filename=None):
+def setup_logging(log_filename=None, log_to_console=False):
     """
-    Set up logging to file and console.
+    Set up logging to file and optionally console with immediate flushing.
     Args:
         log_filename (str, optional): If provided, log to this file.
+        log_to_console (bool, optional): If True, also log to console. Default False.
     """
+    # Disable the lastResort handler that outputs to stderr
+    logging.lastResort = None
+    
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+    # Include logger name to see which module is logging
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
     # Remove all handlers first (to avoid duplicate logs)
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
+    
+    # Custom handler class that flushes immediately after every log
+    class ImmediateFlushHandler(logging.Handler):
+        def __init__(self, stream):
+            super().__init__()
+            self.stream = stream
+            
+        def emit(self, record):
+            try:
+                msg = self.format(record)
+                self.stream.write(msg + '\n')
+                self.stream.flush()  # Immediate flush
+            except Exception:
+                self.handleError(record)
+    
+    # Add file handler with immediate flush
     if log_filename:
-        fh = logging.FileHandler(log_filename)
+        log_file = open(log_filename, 'a', encoding='utf-8')
+        fh = ImmediateFlushHandler(log_file)
         fh.setFormatter(formatter)
+        fh.setLevel(logging.INFO)
         logger.addHandler(fh)
-    # Do NOT add StreamHandler (no console output)
+    
+    # Add console handler with immediate flush if requested
+    if log_to_console:
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(formatter)
+        ch.setLevel(logging.INFO)
+        logger.addHandler(ch)
+        # Ensure stdout is line-buffered
+        sys.stdout.reconfigure(line_buffering=True)
+    
     return logger
 
 def get_logger():

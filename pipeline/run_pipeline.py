@@ -25,15 +25,20 @@ from visualization.plot_utils_std import (
     plot_multi_round_true_pred_std
 )
 from pipeline.experiment_tracker import ExperimentTracker
-from core.cache import Cache
+from core.cache import Cache, PreprocessingCache, FeatureCache, CVFoldCache
 from core.log_utils import get_logger
 from optimization.meta_search import MetaParameterSearch
+# --- Outer/Inner Optimization Import ---
+from meta_optimization.outer_inner import run_outer_inner_optimization
 from core.model_utils import get_results_history
 
 def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None):
     DATAGOV_API_URL = 'https://data.ny.gov/resource/d6yy-54nr.json'
     logger = get_logger()
     cache = Cache()
+    preprocessing_cache = PreprocessingCache(logger=logger)
+    feature_cache = FeatureCache(logger=logger)
+    cv_fold_cache = CVFoldCache(logger=logger)
     tracker = ExperimentTracker()
     kaggle_path = config.KAGGLE_CSV_FILE
     datagov_path = 'data_sets/datagov_cache.csv'
@@ -51,6 +56,7 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
         save_to_file(final_df)
         if not from_iterative_stacking:
             tracker.log_artifact('data_sets/base_dataset.csv', artifact_name='base_dataset.csv')
+    
     # Now split train/test after final_df is set
     train_df, test_df = split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
     # --- Final Feature Count/Order Check Before Data Preparation ---
@@ -160,9 +166,14 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
         from models.model_factory import get_model
         look_back_window = config.LOOK_BACK_WINDOW
         # Build meta_cols from union of all possible meta features in train/test
-        meta_cols_sync = [col for col in train_df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
+        cached_meta_cols = feature_cache.get_meta_cols(train_df)
+        if cached_meta_cols is not None:
+            meta_cols_sync = cached_meta_cols
+        else:
+            meta_cols_sync = [col for col in train_df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
+            feature_cache.set_meta_cols(train_df, meta_cols_sync)
         # Guarantee identical meta_cols for both splits
-        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync)
+        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
         teacher_model = get_model(teacher_model_type, input_shape=X_train.shape[1:])
         teacher_model.fit(X_train, y_train, epochs=config.EPOCHS_FINAL, batch_size=config.BATCH_SIZE, validation_split=config.VALIDATION_SPLIT, verbose=0)
         train_df = augmentation.pseudo_label(
@@ -173,7 +184,7 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     if getattr(config, 'USE_NOISE_INJECTION', False):
         logger.info("[Augmentation] Applying noise injection to training features...")
         look_back_window = config.LOOK_BACK_WINDOW
-        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols)
+        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols, preprocessing_cache=preprocessing_cache)
         X_train = augmentation.add_gaussian_noise(
             X_train,
             std=getattr(config, 'NOISE_STD', 0.1),
@@ -182,8 +193,13 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     else:
         look_back_window = config.LOOK_BACK_WINDOW
         # Build meta_cols_sync from union of all possible meta features in train/test
-        meta_cols_sync = [col for col in train_df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
-        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync)
+        cached_meta_cols = feature_cache.get_meta_cols(train_df)
+        if cached_meta_cols is not None:
+            meta_cols_sync = cached_meta_cols
+        else:
+            meta_cols_sync = [col for col in train_df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
+            feature_cache.set_meta_cols(train_df, meta_cols_sync)
+        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
 
     # --- Robust Feature Synchronization (after all train_df modifications) ---
     all_cols_sync = sorted(set(train_df.columns).union(set(test_df.columns)))
@@ -205,7 +221,7 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
 
     look_back_window = config.LOOK_BACK_WINDOW
     # Guarantee meta_cols_sync is defined for test extraction
-    X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window, meta_cols=meta_cols_sync)
+    X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
     print(f"[FeatureSync][EXTRACT] X_train shape: {X_train.shape}, X_test shape: {X_test.shape}")
     check_feature_consistency(X_train, X_test, logger)
     if X_test.size == 0:
@@ -267,18 +283,63 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
             logger.info(f"[Pipeline]{prefix}[{name}] shape: {arr.shape}")
         else:
             logger.info(f"[Pipeline]{prefix}[{name}] type: {type(arr)}")
+    # --- Outer/Inner Optimization (opt-in) ---
+    if getattr(config, 'USE_OUTER_INNER_OPT', False):
+        logger.info("[Pipeline] USE_OUTER_INNER_OPT is True, running hierarchical optimization (PSO/Bayesian + KerasTuner)...")
+        # Data preparation function for outer/inner optimization
+        def data_prep_fn(meta_params):
+            # meta_params could control train/test split, feature selection, etc.
+            # For now, use the existing train_df/test_df
+            X_train_local, y_train_local = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
+            X_val_local, y_val_local = prepare_data_for_lstm(test_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
+            input_shape = X_train_local.shape[1:]
+            # Return flattened y for outer/inner (expects 1D targets)
+            y_train_flat = y_train_local[0].reshape(-1, y_train_local[0].shape[-1]) if isinstance(y_train_local, tuple) else y_train_local
+            y_val_flat = y_val_local[0].reshape(-1, y_val_local[0].shape[-1]) if isinstance(y_val_local, tuple) else y_val_local
+            return X_train_local, y_train_flat, input_shape, X_val_local, y_val_flat
+        
+        try:
+            from pyswarms.single import GlobalBestPSO
+            bounds = (np.array([1, 0]), np.array([10, 1]))  # Example bounds for meta-parameters
+            logger.info("[Pipeline] Running outer/inner optimization with PSO and KerasTuner...")
+            best_cost, best_pos = run_outer_inner_optimization(data_prep_fn, GlobalBestPSO, bounds)
+            logger.info(f"[Pipeline] Outer/inner optimization complete. Best cost: {best_cost}, Best meta-params: {best_pos}")
+            # Apply best meta-params to config if needed
+            # config.SOME_PARAM = best_pos[0]  # Example
+        except ImportError as e:
+            logger.error(f"[Pipeline] pyswarms not installed. Please install it to use outer/inner optimization: {e}")
+        except Exception as e:
+            logger.error(f"[Pipeline] Error during outer/inner optimization: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        logger.info("[Pipeline] Continuing with standard model training after outer/inner optimization...")
+    
     n_folds = getattr(config, 'CV_FOLDS', 5)
     fold_models_by_type = {mt: [] for mt in model_types}
     fold_val_idx = []  # Store validation indices for each fold
     # First, run cross-validation for each model type and store per-fold models
     from sklearn.model_selection import KFold
-    kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+    
+    # Try to get cached fold indices
+    n_samples = len(X_train)
+    random_state = 42
+    cached_folds = cv_fold_cache.get_fold_indices(n_samples, n_folds, random_state)
+    
+    if cached_folds is not None:
+        fold_indices_list = cached_folds
+    else:
+        # Generate new folds and cache them
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        fold_indices_list = list(kf.split(X_train))
+        cv_fold_cache.set_fold_indices(n_samples, n_folds, fold_indices_list, random_state)
+    
     fold_val_idx = []
     cv_fold_preds_first_five = []
     cv_fold_preds_sixth = []
     cv_fold_labels = []
     fold_models_by_type = {mt: [] for mt in model_types}
-    for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+    for fold_idx, (train_idx, val_idx) in enumerate(fold_indices_list):
         fold_preds_first = []
         fold_preds_sixth = []
         fold_labels = []
@@ -287,13 +348,18 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
             try:
                 if model_type == 'lgbm':
                     model = get_model(model_type)
-                    X_train_lgbm, y_train_lgbm = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync)
-                    X_test_lgbm, y_test_lgbm = prepare_data_for_lstm(test_df, look_back=look_back_window, meta_cols=meta_cols_sync)
-                    # Always flatten train and test the same way
-                    def flatten_X(X):
-                        return X.reshape((X.shape[0], -1)) if X.ndim == 3 else X
-                    X_train_lgbm_flat = flatten_X(X_train_lgbm)
-                    X_test_lgbm_flat = flatten_X(X_test_lgbm)
+                    X_train_lgbm, y_train_lgbm = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
+                    X_test_lgbm, y_test_lgbm = prepare_data_for_lstm(test_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
+                    # Always flatten train and test the same way - use cache
+                    def flatten_X_cached(X, data_id):
+                        cached = feature_cache.get_flattened_data(X, data_id)
+                        if cached is not None:
+                            return cached
+                        X_flat = X.reshape((X.shape[0], -1)) if X.ndim == 3 else X
+                        feature_cache.set_flattened_data(X, data_id, X_flat)
+                        return X_flat
+                    X_train_lgbm_flat = flatten_X_cached(X_train_lgbm, 'train_lgbm')
+                    X_test_lgbm_flat = flatten_X_cached(X_test_lgbm, 'test_lgbm')
                     X_tr = X_train_lgbm_flat[train_idx]
                     X_val = X_train_lgbm_flat[val_idx]
                     # If y_train_lgbm is a tuple/list, index each element separately
@@ -311,7 +377,7 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
                     if hasattr(X_test_lgbm_flat, 'columns'):
                         logger.info(f"[LGBM][CV] X_test_lgbm_flat columns: {list(X_test_lgbm_flat.columns)}")
                 else:
-                    X_train_seq, y_train_seq = prepare_data_for_lstm(train_df, look_back=look_back_window)
+                    X_train_seq, y_train_seq = prepare_data_for_lstm(train_df, look_back=look_back_window, preprocessing_cache=preprocessing_cache)
                     X_tr = X_train_seq[train_idx]
                     X_val = X_train_seq[val_idx]
                     # If y_train_seq is a tuple/list, index each element separately (applies to all non-LGBM models)
@@ -434,7 +500,7 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
         if not fold_models:
             continue
         val_idx = fold_val_idx[fold_idx]
-        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window)
+        X_train, y_train = prepare_data_for_lstm(train_df, look_back=look_back_window, preprocessing_cache=preprocessing_cache)
         X_val = X_train[val_idx]
         from ensemble.ensemble_predict import ensemble_predict
         # Check all models can predict
@@ -689,17 +755,54 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
         else:
             logger.warning(f"[Pipeline] Skipping y_true_all concatenation: shape mismatch (first_five: {y_true_first_five.shape}, sixth: {y_true_sixth.shape})")
             y_true_all = None
+        
+        # Normalize rounds_first_five and rounds_sixth to handle nested list structures
+        def normalize_round(y_pred, round_idx):
+            """Normalize a prediction round to a 2D array, handling nested lists."""
+            arr = np.array(y_pred)
+            # If arr is a list of arrays, try to stack
+            if isinstance(y_pred, list) and len(y_pred) > 0 and hasattr(y_pred[0], 'shape'):
+                try:
+                    arr = np.stack(y_pred, axis=0)
+                except Exception as e:
+                    logger.warning(f"[Pipeline] Could not stack y_pred for round {round_idx+1}: {e}. Returning None.")
+                    return None
+            # If arr is 3D, take the first slice along axis 0
+            if arr.ndim == 3:
+                logger.warning(f"[Pipeline] y_pred for round {round_idx+1} is 3D with shape {arr.shape}. Taking first slice along axis 0.")
+                arr = arr[0]
+            # If arr is 1D, reshape to (n_samples, 1)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+            # If arr is not 2D, return None
+            if arr.ndim != 2:
+                logger.warning(f"[Pipeline] y_pred for round {round_idx+1} is not 2D after normalization: shape={arr.shape}. Returning None.")
+                return None
+            return arr
+        
         rounds_all = []
         for idx, (r5, r6) in enumerate(zip(rounds_first_five, rounds_sixth)):
             if r6 is None or r5 is None:
                 logger.warning(f"[Pipeline] Skipping round {idx+1} for std plot: missing prediction.")
                 continue
-            r5_arr = np.array(r5)
-            r6_arr = np.array(r6).reshape(-1, 1)
-            # Skip if either is not at least 1D or is empty
-            if r5_arr.ndim < 1 or r6_arr.ndim < 1 or r5_arr.size == 0 or r6_arr.size == 0:
-                logger.warning(f"[Pipeline] Skipping round {idx+1} for std plot: zero-dimensional or empty array.")
+            
+            # Normalize both predictions
+            r5_arr = normalize_round(r5, idx)
+            r6_arr = normalize_round(r6, idx)
+            
+            if r5_arr is None or r6_arr is None:
+                logger.warning(f"[Pipeline] Skipping round {idx+1} for std plot: normalization failed.")
                 continue
+            
+            # Ensure r6_arr is shaped as (n_samples, 1)
+            if r6_arr.shape[1] != 1:
+                r6_arr = r6_arr.reshape(-1, 1)
+            
+            # Skip if either is empty
+            if r5_arr.size == 0 or r6_arr.size == 0:
+                logger.warning(f"[Pipeline] Skipping round {idx+1} for std plot: empty array.")
+                continue
+            
             if r5_arr.shape[0] == r6_arr.shape[0]:
                 try:
                     rounds_all.append(np.concatenate([r5_arr, r6_arr], axis=1))
@@ -746,11 +849,29 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
             'multi_round_kl_divergence.png'
         )
 
+    # Log cache statistics
+    cache_stats = preprocessing_cache.get_stats()
+    logger.info(f"[Cache Stats] Preprocessing cache - Hits: {cache_stats['hits']}, Misses: {cache_stats['misses']}, "
+                f"Hit Rate: {cache_stats['hit_rate']:.2%}, Memory Entries: {cache_stats['memory_entries']}, "
+                f"Disk Entries: {cache_stats['disk_entries']}")
+    
+    feature_stats = feature_cache.get_stats()
+    logger.info(f"[Cache Stats] Feature cache - Hits: {feature_stats['hits']}, Misses: {feature_stats['misses']}, "
+                f"Hit Rate: {feature_stats['hit_rate']:.2%}, Memory Entries: {feature_stats['memory_entries']}")
+    
+    cv_stats = cv_fold_cache.get_stats()
+    logger.info(f"[Cache Stats] CV Fold cache - Hits: {cv_stats['hits']}, Misses: {cv_stats['misses']}, "
+                f"Hit Rate: {cv_stats['hit_rate']:.2%}, Disk Entries: {cv_stats['disk_entries']}")
+    
     return best_entry
 
 def run_meta_optimization(final_df, config):
     """
     Run meta-parameter optimization (PSO or Bayesian) and update config with best values.
+    
+    If USE_PSO_POST_CV_ENSEMBLE is True, uses the lighter approach:
+    - PSO with single train/val split (fast)
+    - Full CV + ensemble on best params only (accurate validation)
 
     Args:
         final_df: Final combined DataFrame for training/testing.
@@ -787,20 +908,56 @@ def run_meta_optimization(final_df, config):
     ]
     import data.split
     train_df, test_df = data.split.split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
-    meta_search = MetaParameterSearch(method=getattr(config, 'META_OPT_METHOD', 'pso'))
-    best = meta_search.search(
-        var_names,
-        bounds,
-        (train_df, test_df),
-        n_trials=getattr(config, 'PSO_ITER', 10),
-        n_particles=getattr(config, 'PSO_PARTICLES', 5),
-        n_iter=getattr(config, 'PSO_ITER', 10)
-    )
     logger = get_logger()
-    if best is None:
-        logger.error("Meta-optimization failed or was aborted (e.g., due to recursion guard). Skipping meta-parameter update.")
-        return
-    logger.info(f"Best meta-hyperparameters ({getattr(config, 'META_OPT_METHOD', 'pso')}): %s", dict(zip(var_names, best)))
+    
+    # Check if lighter PSO + post-CV/ensemble approach is enabled
+    use_post_cv_ensemble = getattr(config, 'USE_PSO_POST_CV_ENSEMBLE', False)
+    
+    if use_post_cv_ensemble and getattr(config, 'META_OPT_METHOD', 'pso') == 'pso':
+        logger.info("[Meta-Opt] Using lighter PSO + Post-CV/Ensemble approach...")
+        from optimization.pso_with_post_cv import run_pso_with_post_cv_ensemble
+        
+        result = run_pso_with_post_cv_ensemble(
+            var_names,
+            bounds,
+            (train_df, test_df),
+            config,
+            pso_particles=getattr(config, 'PSO_PARTICLES', 5),
+            pso_iter=getattr(config, 'PSO_ITER', 10),
+            post_cv_folds=getattr(config, 'CV_FOLDS', 5),
+            use_ensemble=True
+        )
+        
+        if result is None:
+            logger.error("PSO + Post-CV/Ensemble failed. Skipping meta-parameter update.")
+            return
+            
+        best = result['best_params']
+        logger.info(f"[Meta-Opt] Best meta-hyperparameters (PSO): {dict(zip(var_names, best))}")
+        if result.get('cv_results'):
+            logger.info(f"[Meta-Opt] Post-PSO CV results: {result['cv_results']}")
+        if result.get('ensemble_results'):
+            logger.info(f"[Meta-Opt] Post-PSO Ensemble results: {result['ensemble_results']}")
+            
+    else:
+        # Original approach: standard PSO or Bayesian
+        logger.info("[Meta-Opt] Using standard meta-optimization approach...")
+        meta_search = MetaParameterSearch(method=getattr(config, 'META_OPT_METHOD', 'pso'))
+        best = meta_search.search(
+            var_names,
+            bounds,
+            (train_df, test_df),
+            n_trials=getattr(config, 'PSO_ITER', 10),
+            n_particles=getattr(config, 'PSO_PARTICLES', 5),
+            n_iter=getattr(config, 'PSO_ITER', 10)
+        )
+        
+        if best is None:
+            logger.error("Meta-optimization failed or was aborted (e.g., due to recursion guard). Skipping meta-parameter update.")
+            return
+        logger.info(f"Best meta-hyperparameters ({getattr(config, 'META_OPT_METHOD', 'pso')}): %s", dict(zip(var_names, best)))
+    
+    # Apply best parameters to config
     for i, name in enumerate(var_names):
         setattr(config, name, best[i])
 

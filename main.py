@@ -16,9 +16,6 @@ warnings.filterwarnings('ignore', category=UserWarning, module='keras')
 warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
 warnings.filterwarnings('ignore', category=FutureWarning)
 
-
-
-
 def main():
     parser = argparse.ArgumentParser(description='LotteryPrediction main entry point.')
     parser.add_argument('--cli', choices=['train', 'evaluate', 'tune'], help='Run CLI entry point from scripts/.')
@@ -43,7 +40,8 @@ def main():
     logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
     os.makedirs(logs_dir, exist_ok=True)
     log_filename = os.path.join(logs_dir, f'log_{timestamp}.rtf')
-    setup_logging(log_filename)
+    log_to_console = getattr(config, 'LOG_TO_CONSOLE', False)
+    setup_logging(log_filename, log_to_console=log_to_console)
     # Ensure all model loggers propagate to root and are set to INFO
     import logging
     for model_logger_name in [

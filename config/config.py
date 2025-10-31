@@ -122,3 +122,14 @@ else:
 
 # --- Random seed (optional) ---
 RANDOM_SEED = 42
+
+# --- Outer-Inner optimization switch ---
+USE_OUTER_INNER_OPT = True 
+
+# --- PSO with Post-CV/Ensemble (lighter alternative) ---
+# If True, run PSO with single split, then full CV+ensemble on best params
+USE_PSO_POST_CV_ENSEMBLE = True
+
+# --- Logging options ---
+# If True, also output logs to console (in addition to file)
+LOG_TO_CONSOLE = False
