@@ -1,0 +1,148 @@
+# --- Anti-copying penalty ---
+# Penalty weight for copying meta-features in predictions (tuned by meta-optimization)
+ANTI_COPY_PENALTY_WEIGHT = 1.0
+
+# --- Probability calibration ---
+# Options: 'none', 'temperature', 'platt', 'isotonic'
+CALIBRATION_METHOD = 'temperature'
+
+# --- Assignment method ---
+# Options: 'optimal' (Hungarian), 'greedy' (legacy uniqueness)
+ASSIGNMENT_METHOD = 'optimal'
+
+# --- Custom loss weights ---
+# Weight for Jaccard loss (set similarity)
+JACCARD_LOSS_WEIGHT = 0.0
+
+# Weight for duplicate penalty (uniqueness enforcement)
+DUPLICATE_PENALTY_WEIGHT = 0.0
+
+# If True, use custom loss (with overcount/entropy penalty) for MLP
+MLP_USE_CUSTOM_LOSS = True
+
+# LightGBM hyperparameters (for meta-optimization)
+LGBM_NUM_LEAVES = 31
+LGBM_LEARNING_RATE = 0.1
+LGBM_MAX_DEPTH = 7
+
+# --- Over-prediction penalty ---
+# Penalty weight for predicted count > true count (squared penalty)
+OVERCOUNT_PENALTY_WEIGHT = 0.5
+
+# --- Overconfidence/entropy penalty ---
+# Penalty weight for low-entropy (overconfident) predictions in the loss
+ENTROPY_PENALTY_WEIGHT = 0.5
+
+# Label smoothing and uniform prior for regularization
+LABEL_SMOOTHING = 0.05
+UNIFORM_MIX_PROB = 0.05
+
+# --- Data Augmentation: Pseudo-labeling and Noise Injection ---
+# Enable/disable pseudo-labeling and noise injection in the pipeline
+USE_PSEUDO_LABELING = False  # Set True to enable pseudo-labeling
+USE_NOISE_INJECTION = False  # Set True to enable noise injection
+
+# Pseudo-labeling thresholds
+PSEUDO_CONFIDENCE_THRESHOLD = 0.7
+PSEUDO_MIN_ENTROPY = 2.5
+
+# Noise injection parameters
+NOISE_STD = 0.1  # Standard deviation for Gaussian noise
+
+# --- Iterative stacking ---
+# If True, use previous predictions as meta-features for next run
+ITERATIVE_STACKING = True
+# Number of rounds for iterative stacking automation (only used if ITERATIVE_STACKING is True)
+ITERATIVE_STACKING_ROUNDS = 3
+
+# --- Ensembling strategy ---
+# Options: 'average', 'weighted', 'stacking'
+ENSEMBLE_STRATEGY = 'weighted'
+
+# --- Cross-validation ---
+# Set CV_FOLDS = 1 for no cross-validation (standard train/test split)
+CV_FOLDS = 5
+
+# --- Meta-parameter optimization method ---
+# Options: 'pso', 'bayesian'
+META_OPT_METHOD = 'pso'
+# config.py
+# Central configuration for all tunable variables in the LotteryPrediction project
+
+# --- Data paths ---
+KAGGLE_CSV_FILE = 'data_sets/powerball_usa.csv'
+BASE_DATASET_FILE = 'data_sets/base_dataset.csv'
+
+# --- Data split ---
+TRAIN_SPLIT = 0.8
+LOOK_BACK_WINDOW = 10  # You can now tune this manually; try 5, 20, 30, etc.
+
+# --- Model training ---
+EPOCHS_TUNER = 40
+EPOCHS_FINAL = 80
+BATCH_SIZE = 32
+VALIDATION_SPLIT = 0.2
+
+# --- KerasTuner ---
+TUNER_MAX_TRIALS = 40
+TUNER_EXECUTIONS_PER_TRIAL = 1
+TUNER_DIRECTORY = 'hypertune_dir'
+TUNER_PROJECT_NAME = 'lstm_lottery'
+
+# --- Label smoothing and uniform mixing ---
+LABEL_SMOOTHING = 0.0
+UNIFORM_MIX_PROB = 0.0
+
+# --- Early stopping ---
+EARLY_STOPPING_PATIENCE = 3  # PSO meta-param
+
+# --- Model complexity ---
+FORCE_LOW_UNITS = True
+FORCE_SIMPLE = True
+
+# --- Development/Production mode switch ---
+DEVELOPMENT_MODE = True  # Set to False for final runs
+
+# --- Temperature grid search (PSO meta-params)
+TEMP_MIN = 0.5
+TEMP_MAX = 2.0
+TEMP_STEP = 0.1
+
+# --- PSO and KerasTuner search sizes ---
+if DEVELOPMENT_MODE:
+	PSO_PARTICLES = 3
+	PSO_ITER = 3
+	KERAS_TUNER_MAX_TRIALS = 10
+	KERAS_TUNER_EXECUTIONS_PER_TRIAL = 1
+else:
+	PSO_PARTICLES = 30
+	PSO_ITER = 50
+	KERAS_TUNER_MAX_TRIALS = 100
+	KERAS_TUNER_EXECUTIONS_PER_TRIAL = 2
+
+# --- Random seed (optional) ---
+RANDOM_SEED = 42
+
+# --- Outer-Inner optimization switch ---
+USE_OUTER_INNER_OPT = True 
+
+# --- PSO with Post-CV/Ensemble (lighter alternative) ---
+# If True, run PSO with single split, then full CV+ensemble on best params
+USE_PSO_POST_CV_ENSEMBLE = True
+
+# --- Logging options ---
+# If True, also output logs to console (in addition to file)
+LOG_TO_CONSOLE = False
+
+# --- Performance tracking and adaptive search ---
+# Enable performance tracking to record worst/best predictions
+ENABLE_PERFORMANCE_TRACKING = True
+
+# Use adaptive search space based on performance history
+USE_ADAPTIVE_SEARCH = True
+
+# Minimum history size before adapting search bounds
+MIN_HISTORY_FOR_ADAPTATION = 10
+
+# Generate performance visualizations after run
+GENERATE_PERFORMANCE_VIZ = True

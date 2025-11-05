@@ -1,6 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+**/__pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 
 # C extensions
@@ -38,6 +40,11 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
+
+# Project data, experiment, and tuning artifacts
+data_sets/
+experiments/
+hypertune_dir/
 .hypothesis/
 .pytest_cache/
 
@@ -64,6 +71,10 @@ hypertune_dir/
 # Logs
 *.log
 logs/
+*.rtf
+
+# Profiles
+*.prof
 
 # OS files
 .DS_Store
@@ -77,6 +88,8 @@ Thumbs.db
 *.bak
 *.swp
 *.tmp
+*.pkl
+*.json
 
 # Ignore model weights and large files
 *.h5
@@ -90,3 +103,4 @@ Thumbs.db
 output/
 __pycache__/main.cpython-313.pyc
 util/__pycache__/model_utils.cpython-313.pyc
+.gitignore

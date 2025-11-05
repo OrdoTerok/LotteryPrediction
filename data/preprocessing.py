@@ -1,0 +1,184 @@
+
+"""
+data.preprocessing
+------------------
+Functions for data cleaning, feature engineering, and preprocessing for lottery datasets.
+Functions:
+    - combine_and_clean_data: Combine and deduplicate multiple data sources.
+    - save_to_file: Save a DataFrame to CSV.
+    - prepare_data_for_lstm: Prepare data for LSTM model input.
+    - clean_data: Clean and preprocess raw data.
+"""
+
+import pandas as pd
+import numpy as np
+import logging
+
+def combine_and_clean_data(df_datagov, df_kaggle):
+    """
+    Combine and clean two lottery DataFrames (from Data.gov and Kaggle).
+
+    Parameters
+    ----------
+    df_datagov : pd.DataFrame
+        DataFrame from Data.gov.
+    df_kaggle : pd.DataFrame
+        DataFrame from Kaggle.
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined, deduplicated, and sorted DataFrame.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("Combining datasets...")
+    combined_df = pd.concat([df_datagov, df_kaggle], ignore_index=True)
+    # Remove duplicate entries based on the draw date and winning numbers.
+    subset_cols = [col for col in ['Draw Date', 'Winning Numbers', 'Multiplier'] if col in combined_df.columns]
+    if not subset_cols:
+        logger.error("No columns found for duplicate removal. Returning original combined DataFrame.")
+        return combined_df
+    combined_df.drop_duplicates(subset=subset_cols, inplace=True)
+    if 'Draw Date' in combined_df.columns:
+        combined_df['Draw Date'] = pd.to_datetime(combined_df['Draw Date'], errors='coerce')
+        combined_df = combined_df.dropna(subset=['Draw Date'])
+        combined_df.sort_values(by='Draw Date', ascending=True, inplace=True)
+        combined_df.reset_index(drop=True, inplace=True)
+    else:
+        logger.error("'Draw Date' column missing after combining. Skipping date conversion and sort.")
+    logger.info(f"Combined dataset contains {len(combined_df)} unique records.")
+    return combined_df
+
+def save_to_file(df, file_path="data_sets/base_dataset.csv"):
+    """
+    Save a DataFrame to a CSV file.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to save.
+    file_path : str, optional
+        Path to save the CSV file (default 'data_sets/base_dataset.csv').
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        df.to_csv(file_path, index=False)
+        logger.info(f"DataFrame successfully saved to {file_path}")
+    except Exception as e:
+        logger.error(f"Error saving DataFrame to CSV: {e}")
+
+def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None, use_cache=True, preprocessing_cache=None):
+    """
+    Prepare data for LSTM model input, generating sequences and one-hot targets.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with at least 'Draw Date' and 'Winning Numbers' columns.
+    look_back : int
+        Number of previous draws to use as input sequence.
+    meta_cols : list, optional
+        List of meta column names to include as features.
+    use_cache : bool, optional
+        Whether to use caching (default True).
+    preprocessing_cache : PreprocessingCache, optional
+        Cache instance to use. If None and use_cache=True, creates a default cache.
+
+    Returns
+    -------
+    X : np.ndarray
+        3D array (samples, timesteps, features) for LSTM input.
+    y : tuple
+        Tuple of (first_five, sixth) one-hot encoded targets.
+    """
+    import config.config as config
+    
+    # Check cache first
+    if use_cache:
+        if preprocessing_cache is None:
+            from core.cache import PreprocessingCache
+            preprocessing_cache = PreprocessingCache()
+        
+        cached_result = preprocessing_cache.get_prepared_data(df, look_back, meta_cols)
+        if cached_result is not None:
+            return cached_result
+    
+    df = df.sort_values(by='Draw Date')
+    def safe_split_and_int(x):
+        if isinstance(x, str):
+            try:
+                return [int(i) for i in x.split()]
+            except Exception:
+                return []
+        elif isinstance(x, (list, tuple)):
+            try:
+                return [int(i) for i in x]
+            except Exception:
+                return []
+        else:
+            return []
+
+    winning_numbers = df['Winning Numbers'].apply(safe_split_and_int).values
+    X = []
+    y_first_five = []
+    y_sixth = []
+    num_first = 5
+    num_first_classes = 69
+    num_sixth_classes = 26
+    # Use provided meta_cols or infer from df
+    if meta_cols is None:
+        meta_cols = [col for col in df.columns if col.startswith('prev_pred_ball_') or col == 'prev_pred_sixth' or col == 'is_pseudo']
+    meta_dim = len(meta_cols)
+    for i in range(len(winning_numbers) - look_back):
+        window_feats = []
+        for j in range(i, i + look_back):
+            base = np.array(winning_numbers[j])
+            # Always build meta feature vector of correct length and order
+            meta = np.zeros(meta_dim, dtype=np.float32)
+            if meta_dim > 0 and j < len(df):
+                for idx, col in enumerate(meta_cols):
+                    if col in df.columns:
+                        val = df.iloc[j][col]
+                        meta[idx] = val if not pd.isnull(val) else 0.0
+            # Concatenate base and meta features
+            full_feat = np.concatenate([base, meta])
+            window_feats.append(full_feat)
+        target_numbers = winning_numbers[i + look_back]
+        # Skip if not enough numbers
+        if not isinstance(target_numbers, (list, np.ndarray)) or len(target_numbers) < num_first + 1:
+            continue
+        X.append(np.stack(window_feats))
+        first_five_onehot = np.zeros((num_first, num_first_classes), dtype=np.float32)
+        for j, n in enumerate(target_numbers[:num_first]):
+            if 1 <= n <= num_first_classes:
+                first_five_onehot[j, n - 1] = 1.0
+        y_first_five.append(first_five_onehot)
+        sixth_onehot = np.zeros((1, num_sixth_classes), dtype=np.float32)
+        n6 = target_numbers[num_first]
+        if 1 <= n6 <= num_sixth_classes:
+            sixth_onehot[0, n6 - 1] = 1.0
+        y_sixth.append(sixth_onehot)
+    X_arr = np.array(X)
+    y_first_five_arr = np.array(y_first_five)
+    y_sixth_arr = np.array(y_sixth)
+    # Ensure X is 3D: (samples, timesteps, features)
+    if X_arr.ndim == 2:
+        # If (samples, features), reshape to (samples, 1, features)
+        X_arr = X_arr[:, np.newaxis, :]
+    assert X_arr.ndim == 3, f"LSTM input X must be 3D, got shape {X_arr.shape}"
+    
+    result = (X_arr, (y_first_five_arr, y_sixth_arr))
+    
+    # Cache the result
+    if use_cache and preprocessing_cache is not None:
+        preprocessing_cache.set_prepared_data(df, look_back, meta_cols, X_arr, (y_first_five_arr, y_sixth_arr))
+    
+    return result
+# data/preprocessing.py
+# Functions for data cleaning, feature engineering, and preprocessing.
+
+# Example placeholder function
+def clean_data(df):
+    # Implement cleaning logic here
+    return df
