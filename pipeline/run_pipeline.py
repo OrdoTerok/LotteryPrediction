@@ -31,6 +31,9 @@ from optimization.meta_search import MetaParameterSearch
 # --- Outer/Inner Optimization Import ---
 from meta_optimization.outer_inner import run_outer_inner_optimization
 from core.model_utils import get_results_history
+# --- Performance Tracking and Adaptive Search ---
+from core.performance_tracker import PerformanceTracker
+from optimization.adaptive_search import AdaptiveSearchSpace
 
 def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None):
     DATAGOV_API_URL = 'https://data.ny.gov/resource/d6yy-54nr.json'
@@ -40,6 +43,19 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     feature_cache = FeatureCache(logger=logger)
     cv_fold_cache = CVFoldCache(logger=logger)
     tracker = ExperimentTracker()
+    
+    # Initialize performance tracking and adaptive search
+    enable_perf_tracking = getattr(config, 'ENABLE_PERFORMANCE_TRACKING', True)
+    use_adaptive_search = getattr(config, 'USE_ADAPTIVE_SEARCH', True)
+    
+    perf_tracker = None
+    adaptive_search = None
+    if enable_perf_tracking:
+        perf_tracker = PerformanceTracker()
+        logger.info(f"[Pipeline] Performance tracking enabled with {len(perf_tracker.history)} historical records")
+        if use_adaptive_search:
+            adaptive_search = AdaptiveSearchSpace(perf_tracker)
+            logger.info("[Pipeline] Adaptive search space enabled")
     kaggle_path = config.KAGGLE_CSV_FILE
     datagov_path = 'data_sets/datagov_cache.csv'
     cache_key = f"combined_df_{os.path.getmtime(kaggle_path)}"
@@ -60,8 +76,6 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     # Now split train/test after final_df is set
     train_df, test_df = split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
     # --- Final Feature Count/Order Check Before Data Preparation ---
-    print(f"[FeatureSync][PREP] train_df columns: {list(train_df.columns)}")
-    print(f"[FeatureSync][PREP] test_df columns: {list(test_df.columns)}")
     assert list(train_df.columns) == list(test_df.columns), "Train/test columns do not match before data preparation!"
     # --- Feature Count/Order Checks ---
     def check_feature_consistency(X_train, X_test, logger):
@@ -103,8 +117,6 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     # Always split train/test after final_df is set
     train_df, test_df = split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
     # --- Final Feature Count/Order Check Before Data Preparation ---
-    print(f"[FeatureSync][PREP] train_df columns: {list(train_df.columns)}")
-    print(f"[FeatureSync][PREP] test_df columns: {list(test_df.columns)}")
     assert list(train_df.columns) == list(test_df.columns), "Train/test columns do not match before data preparation!"
     # --- Feature Synchronization ---
     # Centralize meta_cols logic
@@ -114,9 +126,6 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     all_cols = sorted(set(train_df.columns).union(set(test_df.columns)).union(set(meta_cols)))
     # Add missing columns as zeros to both train and test, and reorder identically
     for df_name, df in zip(['train', 'test'], [train_df, test_df]):
-        missing = [col for col in all_cols if col not in df.columns]
-        if missing:
-            print(f"[FeatureSync] {df_name}_df missing columns: {missing}")
         for col in all_cols:
             if col not in df.columns:
                 df[col] = 0.0
@@ -125,8 +134,6 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
             train_df = df
         else:
             test_df = df
-    print(f"[FeatureSync] train_df columns: {list(train_df.columns)}")
-    print(f"[FeatureSync] test_df columns: {list(test_df.columns)}")
     assert list(train_df.columns) == list(test_df.columns), "Train/test columns do not match after synchronization!"
     from data import augmentation
     # Incorporate best prediction from history as pseudo-label if available
@@ -204,9 +211,6 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     # --- Robust Feature Synchronization (after all train_df modifications) ---
     all_cols_sync = sorted(set(train_df.columns).union(set(test_df.columns)))
     for df_name, df in zip(['train', 'test'], [train_df, test_df]):
-        missing = [col for col in all_cols_sync if col not in df.columns]
-        if missing:
-            print(f"[FeatureSync][FINAL] {df_name}_df missing columns: {missing}")
         for col in all_cols_sync:
             if col not in df.columns:
                 df[col] = 0.0
@@ -215,14 +219,11 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
             train_df = df
         else:
             test_df = df
-    print(f"[FeatureSync][FINAL] train_df columns: {list(train_df.columns)}")
-    print(f"[FeatureSync][FINAL] test_df columns: {list(test_df.columns)}")
     assert list(train_df.columns) == list(test_df.columns), "Train/test columns do not match after robust synchronization!"
 
     look_back_window = config.LOOK_BACK_WINDOW
     # Guarantee meta_cols_sync is defined for test extraction
     X_test, y_test = prepare_data_for_lstm(test_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
-    print(f"[FeatureSync][EXTRACT] X_train shape: {X_train.shape}, X_test shape: {X_test.shape}")
     check_feature_consistency(X_train, X_test, logger)
     if X_test.size == 0:
         logger.error("Not enough data to create test sequences. Exiting.")
@@ -236,7 +237,7 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     y_true_first_five = np.argmax(y_test[0], axis=-1) + 1
     y_true_sixth = np.argmax(y_test[1], axis=-1) + 1
     logger.info("[Pipeline] Running Meta Optimization")
-    run_meta_optimization(final_df, config)
+    run_meta_optimization(final_df, config, adaptive_search=adaptive_search)
     logger.info("[Pipeline] Meta Optimization complete.")
     prev_pred_first_five = None
     prev_pred_sixth = None
@@ -293,10 +294,17 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
             X_train_local, y_train_local = prepare_data_for_lstm(train_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
             X_val_local, y_val_local = prepare_data_for_lstm(test_df, look_back=look_back_window, meta_cols=meta_cols_sync, preprocessing_cache=preprocessing_cache)
             input_shape = X_train_local.shape[1:]
-            # Return flattened y for outer/inner (expects 1D targets)
-            y_train_flat = y_train_local[0].reshape(-1, y_train_local[0].shape[-1]) if isinstance(y_train_local, tuple) else y_train_local
-            y_val_flat = y_val_local[0].reshape(-1, y_val_local[0].shape[-1]) if isinstance(y_val_local, tuple) else y_val_local
-            return X_train_local, y_train_flat, input_shape, X_val_local, y_val_flat
+            # y_train_local and y_val_local are tuples: (first_five, sixth)
+            # Convert to dict format expected by Keras multi-output model
+            y_train_dict = {
+                'first_five': y_train_local[0],  # shape: (n_samples, 5, 69)
+                'sixth': y_train_local[1]         # shape: (n_samples, 1, 26)
+            }
+            y_val_dict = {
+                'first_five': y_val_local[0],
+                'sixth': y_val_local[1]
+            }
+            return X_train_local, y_train_dict, input_shape, X_val_local, y_val_dict
         
         try:
             from pyswarms.single import GlobalBestPSO
@@ -699,6 +707,42 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
         'metrics': best_pred['metrics'] if best_pred is not None else {},
         'matches': best_score
     }
+    
+    # Record prediction performance for adaptive search
+    if perf_tracker is not None and best_pred is not None:
+        # Extract meta-parameters from config
+        meta_params = {
+            'LABEL_SMOOTHING': getattr(config, 'LABEL_SMOOTHING', 0.0),
+            'TEMP_MAX': getattr(config, 'TEMP_MAX', 1.0),
+            'EARLY_STOPPING_PATIENCE': getattr(config, 'EARLY_STOPPING_PATIENCE', 10),
+            'OVERCOUNT_PENALTY_WEIGHT': getattr(config, 'OVERCOUNT_PENALTY_WEIGHT', 0.0),
+            'ENTROPY_PENALTY_WEIGHT': getattr(config, 'ENTROPY_PENALTY_WEIGHT', 0.0),
+            'JACCARD_LOSS_WEIGHT': getattr(config, 'JACCARD_LOSS_WEIGHT', 0.0),
+            'DUPLICATE_PENALTY_WEIGHT': getattr(config, 'DUPLICATE_PENALTY_WEIGHT', 0.0),
+        }
+        
+        # Extract keras/model parameters from best prediction if available
+        keras_params = best_pred.get('hyperparams', {})
+        
+        # Extract metrics
+        metrics = best_pred.get('metrics', {})
+        
+        # Build quality indicators
+        prediction_quality = {
+            'matches': best_score,
+            'first_five_accuracy': metrics.get('first_five_accuracy', 0.0),
+            'sixth_accuracy': metrics.get('sixth_accuracy', 0.0),
+            'total_loss': metrics.get('loss', 0.0),
+        }
+        
+        # Record the prediction
+        perf_tracker.record_prediction(
+            meta_params=meta_params,
+            keras_params=keras_params,
+            metrics=metrics,
+            prediction_quality=prediction_quality
+        )
+        logger.info(f"[Pipeline] Recorded prediction performance: {best_score} matches")
 
     # Utility to plot and log artifact
     def log_plot_and_artifact(plot_func, plot_args, artifact_path):
@@ -713,6 +757,24 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     rounds_first_five = cv_fold_preds_first_five + [final_pred_first_five]
     rounds_sixth = cv_fold_preds_sixth + [final_pred_sixth]
     round_labels = cv_fold_labels + ['Final']
+    
+    # Diagnostic logging
+    logger.info(f"[Pipeline][PLOT-DIAG] rounds_first_five length: {len(rounds_first_five)}")
+    logger.info(f"[Pipeline][PLOT-DIAG] rounds_sixth length: {len(rounds_sixth)}")
+    for idx, (r5, r6) in enumerate(zip(rounds_first_five, rounds_sixth)):
+        logger.info(f"[Pipeline][PLOT-DIAG] Round {idx}: r5 type={type(r5)}, r6 type={type(r6)}")
+        if isinstance(r5, list):
+            logger.info(f"[Pipeline][PLOT-DIAG] Round {idx}: r5 is list with {len(r5)} elements")
+            if len(r5) > 0:
+                logger.info(f"[Pipeline][PLOT-DIAG] Round {idx}: r5[0] type={type(r5[0])}, shape={getattr(r5[0], 'shape', 'no shape')}")
+        elif hasattr(r5, 'shape'):
+            logger.info(f"[Pipeline][PLOT-DIAG] Round {idx}: r5 shape={r5.shape}")
+        if isinstance(r6, list):
+            logger.info(f"[Pipeline][PLOT-DIAG] Round {idx}: r6 is list with {len(r6)} elements")
+            if len(r6) > 0:
+                logger.info(f"[Pipeline][PLOT-DIAG] Round {idx}: r6[0] type={type(r6[0])}, shape={getattr(r6[0], 'shape', 'no shape')}")
+        elif hasattr(r6, 'shape'):
+            logger.info(f"[Pipeline][PLOT-DIAG] Round {idx}: r6 shape={r6.shape}")
     # Use previous predictions if available
     def valid_prev_pred(pred):
         return pred is not None and hasattr(pred, 'ndim') and pred.ndim >= 2
@@ -863,9 +925,55 @@ def run_pipeline(config, from_iterative_stacking=False, cv=None, best_pred=None)
     logger.info(f"[Cache Stats] CV Fold cache - Hits: {cv_stats['hits']}, Misses: {cv_stats['misses']}, "
                 f"Hit Rate: {cv_stats['hit_rate']:.2%}, Disk Entries: {cv_stats['disk_entries']}")
     
+    # Generate performance visualizations if enabled
+    if perf_tracker is not None and getattr(config, 'GENERATE_PERFORMANCE_VIZ', False):
+        try:
+            from visualization.performance_viz import (
+                plot_performance_history,
+                plot_parameter_distributions,
+                plot_parameter_importance,
+                plot_search_space_evolution
+            )
+            
+            viz_dir = 'experiments/performance_viz'
+            os.makedirs(viz_dir, exist_ok=True)
+            
+            logger.info("[Pipeline] Generating performance visualizations...")
+            
+            # Plot performance history
+            plot_performance_history(
+                perf_tracker,
+                save_path=os.path.join(viz_dir, 'performance_history.png')
+            )
+            
+            # Plot parameter distributions
+            plot_parameter_distributions(
+                perf_tracker,
+                save_path=os.path.join(viz_dir, 'parameter_distributions.png')
+            )
+            
+            # Plot parameter importance
+            if adaptive_search is not None:
+                importance = adaptive_search.get_parameter_importance_ranking()
+                plot_parameter_importance(
+                    importance,
+                    save_path=os.path.join(viz_dir, 'parameter_importance.png')
+                )
+            
+            # Plot search space evolution
+            plot_search_space_evolution(
+                perf_tracker,
+                adaptive_search,
+                save_path=os.path.join(viz_dir, 'search_space_evolution.png')
+            )
+            
+            logger.info(f"[Pipeline] Performance visualizations saved to {viz_dir}")
+        except Exception as e:
+            logger.error(f"[Pipeline] Failed to generate performance visualizations: {e}")
+    
     return best_entry
 
-def run_meta_optimization(final_df, config):
+def run_meta_optimization(final_df, config, adaptive_search=None):
     """
     Run meta-parameter optimization (PSO or Bayesian) and update config with best values.
     
@@ -893,7 +1001,7 @@ def run_meta_optimization(final_df, config):
         "LGBM_LEARNING_RATE",
         "LGBM_MAX_DEPTH"
     ]
-    bounds = [
+    default_bounds = [
         (0.0, 0.3),
         (0.0, 0.3),
         (0.5, 1.5),
@@ -909,6 +1017,19 @@ def run_meta_optimization(final_df, config):
     import data.split
     train_df, test_df = data.split.split_dataframe_by_percentage(final_df, config.TRAIN_SPLIT)
     logger = get_logger()
+    
+    # Use adaptive search space if available and enabled
+    if adaptive_search is not None and getattr(config, 'USE_ADAPTIVE_SEARCH', True):
+        logger.info("[Meta-Opt] Using adaptive search bounds based on performance history...")
+        lower_bounds, upper_bounds = adaptive_search.get_pso_bounds(
+            var_names, 
+            default_bounds,
+            adapt=True
+        )
+        bounds = list(zip(lower_bounds, upper_bounds))
+        logger.info(f"[Meta-Opt] Adapted bounds applied")
+    else:
+        bounds = default_bounds
     
     # Check if lighter PSO + post-CV/ensemble approach is enabled
     use_post_cv_ensemble = getattr(config, 'USE_PSO_POST_CV_ENSEMBLE', False)

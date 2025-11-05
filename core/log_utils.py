@@ -39,6 +39,37 @@ def suppress_console():
     sys.stdout = _DevNull()
     sys.stderr = _DevNull()
 
+class SuppressOutput:
+    """
+    Context manager to temporarily suppress stdout and stderr.
+    Usage:
+        with SuppressOutput():
+            # Any code here won't print to console
+            noisy_function()
+    """
+    def __init__(self, suppress_stdout=True, suppress_stderr=True):
+        self.suppress_stdout = suppress_stdout
+        self.suppress_stderr = suppress_stderr
+        self._original_stdout = None
+        self._original_stderr = None
+        self._devnull = _DevNull()
+    
+    def __enter__(self):
+        if self.suppress_stdout:
+            self._original_stdout = sys.stdout
+            sys.stdout = self._devnull
+        if self.suppress_stderr:
+            self._original_stderr = sys.stderr
+            sys.stderr = self._devnull
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._original_stdout is not None:
+            sys.stdout = self._original_stdout
+        if self._original_stderr is not None:
+            sys.stderr = self._original_stderr
+        return False
+
 def setup_logging(log_filename=None, log_to_console=False):
     """
     Set up logging to file and optionally console with immediate flushing.
@@ -54,9 +85,18 @@ def setup_logging(log_filename=None, log_to_console=False):
     # Include logger name to see which module is logging
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     
-    # Remove all handlers first (to avoid duplicate logs)
+    # Remove ALL handlers from root logger and all child loggers
     for handler in logger.handlers[:]:
+        handler.close()
         logger.removeHandler(handler)
+    
+    # Also clear handlers from all existing loggers
+    for name in list(logging.Logger.manager.loggerDict.keys()):
+        child_logger = logging.getLogger(name)
+        for handler in child_logger.handlers[:]:
+            handler.close()
+            child_logger.removeHandler(handler)
+        child_logger.propagate = True  # Ensure they propagate to root
     
     # Custom handler class that flushes immediately after every log
     class ImmediateFlushHandler(logging.Handler):
@@ -88,6 +128,29 @@ def setup_logging(log_filename=None, log_to_console=False):
         logger.addHandler(ch)
         # Ensure stdout is line-buffered
         sys.stdout.reconfigure(line_buffering=True)
+    
+    # Suppress noisy third-party library loggers
+    third_party_loggers = [
+        'tensorflow',
+        'keras',
+        'keras_tuner',
+        'pyswarms',
+        'matplotlib',
+        'PIL',
+        'h5py',
+        'absl',
+        'numba',
+        'lightgbm',
+        'sklearn'
+    ]
+    for lib_name in third_party_loggers:
+        lib_logger = logging.getLogger(lib_name)
+        lib_logger.setLevel(logging.ERROR)
+        lib_logger.propagate = False
+        # Remove all handlers from third-party loggers
+        for handler in lib_logger.handlers[:]:
+            handler.close()
+            lib_logger.removeHandler(handler)
     
     return logger
 

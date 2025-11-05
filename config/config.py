@@ -133,3 +133,16 @@ USE_PSO_POST_CV_ENSEMBLE = True
 # --- Logging options ---
 # If True, also output logs to console (in addition to file)
 LOG_TO_CONSOLE = False
+
+# --- Performance tracking and adaptive search ---
+# Enable performance tracking to record worst/best predictions
+ENABLE_PERFORMANCE_TRACKING = True
+
+# Use adaptive search space based on performance history
+USE_ADAPTIVE_SEARCH = True
+
+# Minimum history size before adapting search bounds
+MIN_HISTORY_FOR_ADAPTATION = 10
+
+# Generate performance visualizations after run
+GENERATE_PERFORMANCE_VIZ = True

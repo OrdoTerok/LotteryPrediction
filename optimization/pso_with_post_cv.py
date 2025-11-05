@@ -74,7 +74,17 @@ def run_pso_with_post_cv_ensemble(var_names, bounds, final_df, config,
             logger.info(f"[PSO-Post-CV] Step 2: Running {post_cv_folds}-fold CV on best parameters...")
             cv_results = run_cv_on_best_params(final_df, config, post_cv_folds)
             result['cv_results'] = cv_results
-            logger.info(f"[PSO-Post-CV] Step 2 complete. CV results: {cv_results}")
+            # Log summary instead of full results
+            cv_summary = {
+                model_type: {
+                    'mean_loss': results.get('mean_loss', 'N/A'),
+                    'std_loss': results.get('std_loss', 'N/A'),
+                    'num_folds': len(results.get('fold_results', [])) if 'fold_results' in results else 0,
+                    'error': results.get('error')
+                }
+                for model_type, results in cv_results.items()
+            }
+            logger.info(f"[PSO-Post-CV] Step 2 complete. CV summary: {cv_summary}")
         else:
             logger.info("[PSO-Post-CV] Step 2 skipped (post_cv_folds <= 1).")
             result['cv_results'] = None
@@ -84,7 +94,17 @@ def run_pso_with_post_cv_ensemble(var_names, bounds, final_df, config,
             logger.info("[PSO-Post-CV] Step 3: Running ensemble on best parameters...")
             ensemble_results = run_ensemble_on_best_params(final_df, config)
             result['ensemble_results'] = ensemble_results
-            logger.info(f"[PSO-Post-CV] Step 3 complete. Ensemble results: {ensemble_results}")
+            # Log summary instead of full results
+            if ensemble_results:
+                ensemble_summary = {
+                    'mean_loss': ensemble_results.get('mean_loss', 'N/A'),
+                    'num_models': len(ensemble_results.get('models', {})),
+                    'pred_shape_first': ensemble_results.get('pred_first', [None])[0].shape if ensemble_results.get('pred_first') else None,
+                    'pred_shape_sixth': ensemble_results.get('pred_sixth', [None])[0].shape if ensemble_results.get('pred_sixth') else None
+                }
+                logger.info(f"[PSO-Post-CV] Step 3 complete. Ensemble summary: {ensemble_summary}")
+            else:
+                logger.info("[PSO-Post-CV] Step 3 complete. No ensemble results.")
         else:
             logger.info("[PSO-Post-CV] Step 3 skipped (use_ensemble=False).")
             result['ensemble_results'] = None
@@ -127,8 +147,12 @@ def run_cv_on_best_params(final_df, config, cv_folds=5):
     for model_type in model_types:
         logger.info(f"[PSO-Post-CV] Running {cv_folds}-fold CV for {model_type.upper()}...")
         try:
-            input_shape = X_train.shape[1:]
-            model = get_model(model_type, input_shape=input_shape)
+            # LightGBM doesn't use input_shape
+            if model_type == 'lgbm':
+                model = get_model(model_type)
+            else:
+                input_shape = X_train.shape[1:]
+                model = get_model(model_type, input_shape=input_shape)
             
             # Run cross-validation
             fold_results = model.cross_validate(X_train, y_train, cv=cv_folds, epochs=5, batch_size=32, verbose=0)
@@ -179,8 +203,12 @@ def run_ensemble_on_best_params(final_df, config):
     for model_type in model_types:
         logger.info(f"[PSO-Post-CV] Training {model_type.upper()} for ensemble...")
         try:
-            input_shape = X_train.shape[1:]
-            model = get_model(model_type, input_shape=input_shape)
+            # LightGBM doesn't use input_shape
+            if model_type == 'lgbm':
+                model = get_model(model_type)
+            else:
+                input_shape = X_train.shape[1:]
+                model = get_model(model_type, input_shape=input_shape)
             # Train model directly using its fit method
             model.fit(X_train, y_train, epochs=10, batch_size=32, validation_split=0.1, verbose=0)
             models[model_type] = model

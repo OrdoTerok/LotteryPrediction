@@ -1,20 +1,40 @@
 import os
-import json
 import sys
+
+# Suppress TensorFlow and Keras warnings FIRST (before any imports that might load TF)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
+import json
 import argparse
+import logging
+
+# Disable default logging to console BEFORE any other imports
+logging.lastResort = None
+# Remove any existing handlers from root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.CRITICAL + 1)  # Effectively disable until setup_logging
+for handler in root_logger.handlers[:]:
+    handler.close()
+    root_logger.removeHandler(handler)
+
 import config.config as config
 from core.cache import Cache
 from core.log_utils import setup_logging
 from pipeline.experiment_tracker import ExperimentTracker
 import cProfile
 import datetime
-
-# Suppress TensorFlow and Keras warnings and info messages
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='keras')
-warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
-warnings.filterwarnings('ignore', category=FutureWarning)
+
+# Suppress ALL warnings from being printed to console
+warnings.filterwarnings('ignore')
+warnings.simplefilter('ignore')
+
+# Redirect warnings to logging system instead of stderr
+logging.captureWarnings(True)
+warnings_logger = logging.getLogger('py.warnings')
+warnings_logger.setLevel(logging.ERROR)
+warnings_logger.propagate = False
 
 def main():
     parser = argparse.ArgumentParser(description='LotteryPrediction main entry point.')
@@ -42,6 +62,22 @@ def main():
     log_filename = os.path.join(logs_dir, f'log_{timestamp}.rtf')
     log_to_console = getattr(config, 'LOG_TO_CONSOLE', False)
     setup_logging(log_filename, log_to_console=log_to_console)
+    
+    # If not logging to console, completely suppress stdout/stderr
+    if not log_to_console:
+        from core.log_utils import suppress_console
+        suppress_console()
+    
+    # Suppress TensorFlow's internal logging
+    try:
+        import tensorflow as tf
+        tf_logger = logging.getLogger('tensorflow')
+        tf_logger.setLevel(logging.ERROR)
+        tf_logger.propagate = False
+        tf.get_logger().setLevel('ERROR')
+    except:
+        pass
+    
     # Ensure all model loggers propagate to root and are set to INFO
     import logging
     for model_logger_name in [
@@ -53,8 +89,12 @@ def main():
         model_logger = logging.getLogger(model_logger_name)
         model_logger.setLevel(logging.INFO)
         model_logger.propagate = True
+    
+    # Log development mode to file only, not console
     if getattr(config, 'DEVELOPMENT_MODE', False):
-        warnings.warn("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")
+        logger = logging.getLogger(__name__)
+        logger.info("[CONFIG] DEVELOPMENT_MODE is ON: Using low values for PSO_PARTICLES, PSO_ITER, and KERAS_TUNER_MAX_TRIALS.")
+    
     tracker = ExperimentTracker()
     cache = Cache()
 

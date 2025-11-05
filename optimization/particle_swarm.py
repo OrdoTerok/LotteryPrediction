@@ -210,8 +210,11 @@ def fitness_func(train_df, test_df):
 
 		# Evaluate model on test set
 		eval_result = model.evaluate(X_test, y_test, verbose=0)
-		# eval_result can be a list: [total_loss, first_five_loss, sixth_loss, ...]
-		if isinstance(eval_result, (list, tuple)):
+		# eval_result can be a list, tuple, or dict
+		if isinstance(eval_result, dict):
+			# Extract loss from dictionary (typically 'loss' key)
+			total_loss = float(eval_result.get('loss', eval_result.get('total_loss', 1e6)))
+		elif isinstance(eval_result, (list, tuple)):
 			total_loss = float(eval_result[0])
 		else:
 			total_loss = float(eval_result)
@@ -336,7 +339,10 @@ def particle_swarm_optimize(var_names, bounds, final_df, n_particles=5, n_iter=1
 			# Train model directly using its fit method
 			model.fit(X_train, y_train, epochs=3, batch_size=32, validation_split=0.1, verbose=0)
 			eval_result = model.evaluate(X_test, y_test, verbose=0)
-			if isinstance(eval_result, (list, tuple)):
+			if isinstance(eval_result, dict):
+				# Extract loss from dictionary (typically 'loss' key)
+				total_loss = float(eval_result.get('loss', eval_result.get('total_loss', 1e6)))
+			elif isinstance(eval_result, (list, tuple)):
 				total_loss = float(eval_result[0])
 			else:
 				total_loss = float(eval_result)

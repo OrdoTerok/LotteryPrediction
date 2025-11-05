@@ -141,10 +141,8 @@ def prepare_data_for_lstm(df: pd.DataFrame, look_back: int, meta_cols=None, use_
                     if col in df.columns:
                         val = df.iloc[j][col]
                         meta[idx] = val if not pd.isnull(val) else 0.0
-            # Log feature vector shape for diagnostics
+            # Concatenate base and meta features
             full_feat = np.concatenate([base, meta])
-            if i == 0 and j == 0:
-                print(f"[prepare_data_for_lstm] Feature vector shape: {full_feat.shape} (base: {base.shape}, meta: {meta.shape})")
             window_feats.append(full_feat)
         target_numbers = winning_numbers[i + look_back]
         # Skip if not enough numbers
